@@ -56,6 +56,46 @@ impl Token {
   }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum AstKind {
+  Add,
+  Sub,
+  Mul,
+  Div,
+  Num,
+}
+
+#[derive(Debug, Clone)]
+struct AstNode {
+  kind: AstKind,
+  lhs: Option<Box<AstNode>>,
+  rhs: Option<Box<AstNode>>,
+  value: Option<i64>,
+  loc: usize,
+}
+
+impl AstNode {
+  fn new_binary(kind: AstKind, lhs: AstNode, rhs: AstNode, loc: usize) -> Self {
+    Self {
+      kind,
+      lhs: Some(Box::new(lhs)),
+      rhs: Some(Box::new(rhs)),
+      value: None,
+      loc,
+    }
+  }
+
+  fn new_num(value: i64, loc: usize) -> Self {
+    Self {
+      kind: AstKind::Num,
+      lhs: None,
+      rhs: None,
+      value: Some(value),
+      loc,
+    }
+  }
+}
+
 fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
   let mut tokens = Vec::new();
   let mut prev_index: Option<usize> = None;
@@ -88,7 +128,7 @@ fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
       continue;
     }
 
-    if c == b'+' || c == b'-' {
+    if matches!(c, b'+' | b'-' | b'*' | b'/' | b'(' | b')') {
       let idx = tokens.len();
       tokens.push(Token::new(TokenKind::Punctuator, i, 1, None));
       if let Some(prev) = prev_index {
@@ -148,20 +188,24 @@ impl<'a> TokenStream<'a> {
     }
   }
 
-  fn equal(&mut self, op: &str) -> bool {
+  fn current(&self) -> Option<&Token> {
+    self.tokens.get(self.pos)
+  }
+
+  fn equal(&mut self, op: &str) -> Option<Token> {
     if let Some(token) = self.tokens.get(self.pos).cloned()
       && token.kind == TokenKind::Punctuator
       && token.len == op.len()
       && token_text(&token, self.source) == op
     {
       self.pos += 1;
-      return true;
+      return Some(token);
     }
-    false
+    None
   }
 
   fn skip(&mut self, s: &str) -> CompileResult<()> {
-    if self.equal(s) {
+    if self.equal(s).is_some() {
       Ok(())
     } else {
       let (loc, got) = match self.tokens.get(self.pos) {
@@ -176,7 +220,7 @@ impl<'a> TokenStream<'a> {
     }
   }
 
-  fn get_number(&mut self) -> CompileResult<i64> {
+  fn get_number(&mut self) -> CompileResult<(i64, usize)> {
     if self.pos >= self.tokens.len() {
       return Err(CompileError::at(
         self.source,
@@ -186,11 +230,16 @@ impl<'a> TokenStream<'a> {
     }
 
     if self.tokens[self.pos].kind == TokenKind::Num {
-      let value = self.tokens[self.pos]
-        .value
-        .expect("number token must have a value");
+      let token = self.tokens[self.pos].clone();
       self.pos += 1;
-      return Ok(value);
+      let value = token.value.ok_or_else(|| {
+        CompileError::at(
+          self.source,
+          token.loc,
+          "internal error: numeric token missing value",
+        )
+      })?;
+      return Ok((value, token.loc));
     }
 
     let token = &self.tokens[self.pos];
@@ -210,6 +259,96 @@ impl<'a> TokenStream<'a> {
   }
 }
 
+fn parse_expr(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  parse_add(stream)
+}
+
+fn parse_add(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  let mut node = parse_mul(stream)?;
+
+  loop {
+    if let Some(op_token) = stream.equal("+") {
+      let rhs = parse_mul(stream)?;
+      node = AstNode::new_binary(AstKind::Add, node, rhs, op_token.loc);
+    } else if let Some(op_token) = stream.equal("-") {
+      let rhs = parse_mul(stream)?;
+      node = AstNode::new_binary(AstKind::Sub, node, rhs, op_token.loc);
+    } else {
+      break;
+    }
+  }
+
+  Ok(node)
+}
+
+fn parse_mul(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  let mut node = parse_primary(stream)?;
+
+  loop {
+    if let Some(op_token) = stream.equal("*") {
+      let rhs = parse_primary(stream)?;
+      node = AstNode::new_binary(AstKind::Mul, node, rhs, op_token.loc);
+    } else if let Some(op_token) = stream.equal("/") {
+      let rhs = parse_primary(stream)?;
+      node = AstNode::new_binary(AstKind::Div, node, rhs, op_token.loc);
+    } else {
+      break;
+    }
+  }
+
+  Ok(node)
+}
+
+fn parse_primary(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  if stream.equal("(").is_some() {
+    let node = parse_expr(stream)?;
+    stream.skip(")")?;
+    Ok(node)
+  } else {
+    let (value, loc) = stream.get_number()?;
+    Ok(AstNode::new_num(value, loc))
+  }
+}
+
+fn gen_expr(node: &AstNode, asm: &mut String, expr: &str) -> CompileResult<()> {
+  match node.kind {
+    AstKind::Num => {
+      let value = node.value.ok_or_else(|| {
+        CompileError::at(expr, node.loc, "internal error: number node missing value")
+      })?;
+      asm.push_str(&format!("    mov ${value}, %rax\n"));
+      asm.push_str("    push %rax\n");
+    }
+    AstKind::Add | AstKind::Sub | AstKind::Mul | AstKind::Div => {
+      let lhs = node
+        .lhs
+        .as_ref()
+        .ok_or_else(|| CompileError::at(expr, node.loc, "internal error: missing left operand"))?;
+      let rhs = node
+        .rhs
+        .as_ref()
+        .ok_or_else(|| CompileError::at(expr, node.loc, "internal error: missing right operand"))?;
+      gen_expr(lhs, asm, expr)?;
+      gen_expr(rhs, asm, expr)?;
+      asm.push_str("    pop %rdi\n");
+      asm.push_str("    pop %rax\n");
+      match node.kind {
+        AstKind::Add => asm.push_str("    add %rdi, %rax\n"),
+        AstKind::Sub => asm.push_str("    sub %rdi, %rax\n"),
+        AstKind::Mul => asm.push_str("    imul %rdi, %rax\n"),
+        AstKind::Div => {
+          asm.push_str("    cqo\n");
+          asm.push_str("    idiv %rdi\n");
+        }
+        AstKind::Num => unreachable!(),
+      }
+      asm.push_str("    push %rax\n");
+    }
+  }
+
+  Ok(())
+}
+
 fn generate_assembly(expr: &str) -> CompileResult<String> {
   let tokens = tokenize(expr)?;
   let mut stream = TokenStream::new(tokens, expr);
@@ -218,25 +357,25 @@ fn generate_assembly(expr: &str) -> CompileResult<String> {
     return Err(CompileError::at(expr, 0, "expression is empty"));
   }
 
+  let node = parse_expr(&mut stream)?;
+  if !stream.is_eof() {
+    let token = stream.current().ok_or_else(|| {
+      CompileError::at(expr, expr.len(), "unexpected end of input after expression")
+    })?;
+    let got = describe_token(Some(token), expr);
+    return Err(CompileError::at(
+      expr,
+      token.loc,
+      format!("unexpected token \"{got}\""),
+    ));
+  }
+
   let mut asm = String::new();
   asm.push_str(".global main\n");
   asm.push_str("main:\n");
 
-  let first = stream.get_number()?;
-  asm.push_str(&format!("    mov ${first}, %rax\n"));
-
-  while !stream.is_eof() {
-    if stream.equal("+") {
-      let value = stream.get_number()?;
-      asm.push_str(&format!("    add ${value}, %rax\n"));
-      continue;
-    }
-
-    stream.skip("-")?;
-    let value = stream.get_number()?;
-    asm.push_str(&format!("    sub ${value}, %rax\n"));
-  }
-
+  gen_expr(&node, &mut asm, expr)?;
+  asm.push_str("    pop %rax\n");
   asm.push_str("    ret\n");
   Ok(asm)
 }

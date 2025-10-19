@@ -35,5 +35,14 @@ assert 255 255
 assert "1+2-1" 2
 assert " 10 + 20 - 5 " 25
 assert "50 - 20 + 3" 33
+assert "2*3" 6
+assert "18/3" 6
+assert "1+2*3" 7
+assert "(1+2)*3" 9
+assert "2*(3+4)" 14
+assert "50/(2*5)" 5
+assert "(3+5)/2" 4
+assert "5*(9-6)" 15
+assert "5+6*7" 47
 
 echo "OK"
