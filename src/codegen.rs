@@ -1,16 +1,25 @@
-use crate::parser::{AstNode, BinaryOp};
+use crate::parser::{AstNode, BinaryOp, Stmt};
 
-pub fn generate(ast: &AstNode) -> String {
+pub fn generate(program: &Stmt) -> String {
   let mut asm = String::new();
   asm.push_str(".global main\n");
   asm.push_str("main:\n");
 
-  emit_expr(ast, &mut asm);
+  emit_stmt(program, &mut asm);
 
   asm.push_str("    pop %rax\n");
   asm.push_str("    ret\n");
 
   asm
+}
+
+fn emit_stmt(stmt: &Stmt, asm: &mut String) {
+  emit_expr(&stmt.expr, asm);
+
+  if let Some(next) = stmt.next.as_deref() {
+    asm.push_str("    pop %rax\n");
+    emit_stmt(next, asm);
+  }
 }
 
 fn emit_expr(node: &AstNode, asm: &mut String) {

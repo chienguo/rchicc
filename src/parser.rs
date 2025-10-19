@@ -50,20 +50,27 @@ impl AstNode {
   }
 }
 
-pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<AstNode> {
+#[derive(Debug, Clone)]
+pub struct Stmt {
+  pub expr: AstNode,
+  pub next: Option<Box<Stmt>>,
+}
+
+pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Box<Stmt>> {
   let mut stream = TokenStream::new(tokens, source);
 
   if stream.is_eof() {
-    return Err(CompileError::at(source, 0, "expression is empty"));
+    return Err(CompileError::at(source, 0, "program is empty"));
   }
 
-  let node = parse_equality(&mut stream)?;
+  let stmts = parse_stmt(&mut stream)?;
+
   if !stream.is_eof() {
     let token = stream.current().ok_or_else(|| {
       CompileError::at(
         source,
         source.len(),
-        "unexpected end of input after expression",
+        "unexpected end of input after statement",
       )
     })?;
     let got = describe_token(Some(token), source);
@@ -74,7 +81,24 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<AstNode> {
     ));
   }
 
-  Ok(node)
+  Ok(stmts)
+}
+
+fn parse_stmt(stream: &mut TokenStream) -> CompileResult<Box<Stmt>> {
+  parse_expr_stmt(stream)
+}
+
+fn parse_expr_stmt(stream: &mut TokenStream) -> CompileResult<Box<Stmt>> {
+  let expr = parse_expr(stream)?;
+  stream.skip(";")?;
+
+  let next = if stream.is_eof() {
+    None
+  } else {
+    Some(parse_stmt(stream)?)
+  };
+
+  Ok(Box::new(Stmt { expr, next }))
 }
 
 fn parse_expr(stream: &mut TokenStream) -> CompileResult<AstNode> {

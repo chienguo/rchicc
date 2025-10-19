@@ -8,6 +8,6 @@ pub use error::{CompileError, CompileResult};
 
 pub fn generate_assembly(expr: &str) -> CompileResult<String> {
   let tokens = tokenizer::tokenize(expr)?;
-  let ast = parser::parse(tokens, expr)?;
-  Ok(codegen::generate(&ast))
+  let program = parser::parse(tokens, expr)?;
+  Ok(codegen::generate(&program))
 }
