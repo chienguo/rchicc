@@ -38,7 +38,6 @@ enum TokenKind {
 #[derive(Debug, Clone)]
 struct Token {
   kind: TokenKind,
-  next: Option<usize>,
   value: Option<i64>,
   loc: usize,
   len: usize,
@@ -48,7 +47,6 @@ impl Token {
   fn new(kind: TokenKind, loc: usize, len: usize, value: Option<i64>) -> Self {
     Self {
       kind,
-      next: None,
       value,
       loc,
       len,
@@ -57,59 +55,50 @@ impl Token {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AstKind {
+enum BinaryOp {
   Add,
   Sub,
   Mul,
   Div,
-  Neg,
-  Num,
 }
 
 #[derive(Debug, Clone)]
-struct AstNode {
-  kind: AstKind,
-  lhs: Option<Box<AstNode>>,
-  rhs: Option<Box<AstNode>>,
-  value: Option<i64>,
-  loc: usize,
+enum AstNode {
+  Num {
+    value: i64,
+  },
+  Neg {
+    operand: Box<AstNode>,
+  },
+  Binary {
+    op: BinaryOp,
+    lhs: Box<AstNode>,
+    rhs: Box<AstNode>,
+  },
 }
 
 impl AstNode {
-  fn new_binary(kind: AstKind, lhs: AstNode, rhs: AstNode, loc: usize) -> Self {
-    Self {
-      kind,
-      lhs: Some(Box::new(lhs)),
-      rhs: Some(Box::new(rhs)),
-      value: None,
-      loc,
+  fn number(value: i64) -> Self {
+    Self::Num { value }
+  }
+
+  fn neg(operand: AstNode) -> Self {
+    Self::Neg {
+      operand: Box::new(operand),
     }
   }
 
-  fn new_unary(kind: AstKind, operand: AstNode, loc: usize) -> Self {
-    Self {
-      kind,
-      lhs: Some(Box::new(operand)),
-      rhs: None,
-      value: None,
-      loc,
-    }
-  }
-
-  fn new_num(value: i64, loc: usize) -> Self {
-    Self {
-      kind: AstKind::Num,
-      lhs: None,
-      rhs: None,
-      value: Some(value),
-      loc,
+  fn binary(op: BinaryOp, lhs: AstNode, rhs: AstNode) -> Self {
+    Self::Binary {
+      op,
+      lhs: Box::new(lhs),
+      rhs: Box::new(rhs),
     }
   }
 }
 
 fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
   let mut tokens = Vec::new();
-  let mut prev_index: Option<usize> = None;
   let bytes = input.as_bytes();
   let mut i = 0;
 
@@ -130,22 +119,12 @@ fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
       let value = text
         .parse::<i64>()
         .map_err(|err| CompileError::at(input, start, format!("invalid number: {err}")))?;
-      let idx = tokens.len();
       tokens.push(Token::new(TokenKind::Num, start, i - start, Some(value)));
-      if let Some(prev) = prev_index {
-        tokens[prev].next = Some(idx);
-      }
-      prev_index = Some(idx);
       continue;
     }
 
     if matches!(c, b'+' | b'-' | b'*' | b'/' | b'(' | b')') {
-      let idx = tokens.len();
       tokens.push(Token::new(TokenKind::Punctuator, i, 1, None));
-      if let Some(prev) = prev_index {
-        tokens[prev].next = Some(idx);
-      }
-      prev_index = Some(idx);
       i += 1;
       continue;
     }
@@ -161,11 +140,7 @@ fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
     return Err(CompileError::at(input, i, message));
   }
 
-  let eof_index = tokens.len();
   tokens.push(Token::new(TokenKind::Eof, input.len(), 0, None));
-  if let Some(prev) = prev_index {
-    tokens[prev].next = Some(eof_index);
-  }
   Ok(tokens)
 }
 
@@ -203,16 +178,20 @@ impl<'a> TokenStream<'a> {
     self.tokens.get(self.pos)
   }
 
-  fn equal(&mut self, op: &str) -> Option<Token> {
-    if let Some(token) = self.tokens.get(self.pos).cloned()
+  fn equal(&mut self, op: &str) -> Option<&Token> {
+    if let Some(token) = self.tokens.get(self.pos)
       && token.kind == TokenKind::Punctuator
       && token.len == op.len()
-      && token_text(&token, self.source) == op
+      && token_text(token, self.source) == op
     {
       self.pos += 1;
       return Some(token);
     }
     None
+  }
+
+  fn peek(&self) -> Option<&Token> {
+    self.tokens.get(self.pos)
   }
 
   fn skip(&mut self, s: &str) -> CompileResult<()> {
@@ -278,15 +257,25 @@ fn parse_add(stream: &mut TokenStream) -> CompileResult<AstNode> {
   let mut node = parse_mul(stream)?;
 
   loop {
-    if let Some(op_token) = stream.equal("+") {
-      let rhs = parse_mul(stream)?;
-      node = AstNode::new_binary(AstKind::Add, node, rhs, op_token.loc);
-    } else if let Some(op_token) = stream.equal("-") {
-      let rhs = parse_mul(stream)?;
-      node = AstNode::new_binary(AstKind::Sub, node, rhs, op_token.loc);
-    } else {
-      break;
-    }
+    let op_str = match stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Punctuator)
+      .map(|token| token_text(token, stream.source))
+    {
+      Some(symbol @ "+") => symbol,
+      Some(symbol @ "-") => symbol,
+      _ => break,
+    };
+
+    let op = match op_str {
+      "+" => BinaryOp::Add,
+      "-" => BinaryOp::Sub,
+      _ => unreachable!(),
+    };
+
+    stream.skip(op_str)?;
+    let rhs = parse_mul(stream)?;
+    node = AstNode::binary(op, node, rhs);
   }
 
   Ok(node)
@@ -296,15 +285,25 @@ fn parse_mul(stream: &mut TokenStream) -> CompileResult<AstNode> {
   let mut node = parse_unary(stream)?;
 
   loop {
-    if let Some(op_token) = stream.equal("*") {
-      let rhs = parse_unary(stream)?;
-      node = AstNode::new_binary(AstKind::Mul, node, rhs, op_token.loc);
-    } else if let Some(op_token) = stream.equal("/") {
-      let rhs = parse_unary(stream)?;
-      node = AstNode::new_binary(AstKind::Div, node, rhs, op_token.loc);
-    } else {
-      break;
-    }
+    let op_str = match stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Punctuator)
+      .map(|token| token_text(token, stream.source))
+    {
+      Some(symbol @ "*") => symbol,
+      Some(symbol @ "/") => symbol,
+      _ => break,
+    };
+
+    let op = match op_str {
+      "*" => BinaryOp::Mul,
+      "/" => BinaryOp::Div,
+      _ => unreachable!(),
+    };
+
+    stream.skip(op_str)?;
+    let rhs = parse_unary(stream)?;
+    node = AstNode::binary(op, node, rhs);
   }
 
   Ok(node)
@@ -316,9 +315,9 @@ fn parse_unary(stream: &mut TokenStream) -> CompileResult<AstNode> {
     return Ok(operand);
   }
 
-  if let Some(op_token) = stream.equal("-") {
+  if stream.equal("-").is_some() {
     let operand = parse_unary(stream)?;
-    return Ok(AstNode::new_unary(AstKind::Neg, operand, op_token.loc));
+    return Ok(AstNode::neg(operand));
   }
 
   parse_primary(stream)
@@ -330,51 +329,35 @@ fn parse_primary(stream: &mut TokenStream) -> CompileResult<AstNode> {
     stream.skip(")")?;
     Ok(node)
   } else {
-    let (value, loc) = stream.get_number()?;
-    Ok(AstNode::new_num(value, loc))
+    let (value, _) = stream.get_number()?;
+    Ok(AstNode::number(value))
   }
 }
 
-fn gen_expr(node: &AstNode, asm: &mut String, expr: &str) -> CompileResult<()> {
-  match node.kind {
-    AstKind::Num => {
-      let value = node.value.ok_or_else(|| {
-        CompileError::at(expr, node.loc, "internal error: number node missing value")
-      })?;
+fn gen_expr(node: &AstNode, asm: &mut String, _expr: &str) -> CompileResult<()> {
+  match node {
+    AstNode::Num { value } => {
       asm.push_str(&format!("    mov ${value}, %rax\n"));
       asm.push_str("    push %rax\n");
     }
-    AstKind::Add | AstKind::Sub | AstKind::Mul | AstKind::Div => {
-      let lhs = node
-        .lhs
-        .as_ref()
-        .ok_or_else(|| CompileError::at(expr, node.loc, "internal error: missing left operand"))?;
-      let rhs = node
-        .rhs
-        .as_ref()
-        .ok_or_else(|| CompileError::at(expr, node.loc, "internal error: missing right operand"))?;
-      gen_expr(lhs, asm, expr)?;
-      gen_expr(rhs, asm, expr)?;
+    AstNode::Binary { op, lhs, rhs } => {
+      gen_expr(lhs, asm, _expr)?;
+      gen_expr(rhs, asm, _expr)?;
       asm.push_str("    pop %rdi\n");
       asm.push_str("    pop %rax\n");
-      match node.kind {
-        AstKind::Add => asm.push_str("    add %rdi, %rax\n"),
-        AstKind::Sub => asm.push_str("    sub %rdi, %rax\n"),
-        AstKind::Mul => asm.push_str("    imul %rdi, %rax\n"),
-        AstKind::Div => {
+      match op {
+        BinaryOp::Add => asm.push_str("    add %rdi, %rax\n"),
+        BinaryOp::Sub => asm.push_str("    sub %rdi, %rax\n"),
+        BinaryOp::Mul => asm.push_str("    imul %rdi, %rax\n"),
+        BinaryOp::Div => {
           asm.push_str("    cqo\n");
           asm.push_str("    idiv %rdi\n");
         }
-        _ => unreachable!(),
       }
       asm.push_str("    push %rax\n");
     }
-    AstKind::Neg => {
-      let operand = node
-        .lhs
-        .as_ref()
-        .ok_or_else(|| CompileError::at(expr, node.loc, "internal error: missing unary operand"))?;
-      gen_expr(operand, asm, expr)?;
+    AstNode::Neg { operand } => {
+      gen_expr(operand, asm, _expr)?;
       asm.push_str("    pop %rax\n");
       asm.push_str("    neg %rax\n");
       asm.push_str("    push %rax\n");
