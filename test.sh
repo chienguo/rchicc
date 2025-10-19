@@ -26,12 +26,14 @@ assert() {
         exit 1
     fi
 
-    echo "$input => $expected"
     rm -rf "${tmpdir}"
 }
 
 assert 0 0
 assert 42 42
 assert 255 255
+assert "1+2-1" 2
+assert " 10 + 20 - 5 " 25
+assert "50 - 20 + 3" 33
 
 echo "OK"
