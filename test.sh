@@ -51,5 +51,17 @@ assert "-3*2 + 12" 6
 assert "- - +10" 10
 assert "- -10" 10
 assert "-10+20" 10
+assert "1==1" 1
+assert "0==1" 0
+assert "2!=3" 1
+assert "4<5" 1
+assert "5<5" 0
+assert "4<=4" 1
+assert "5>=3" 1
+assert "3>=4" 0
+assert "3>2" 1
+assert "3>5" 0
+assert "1+2==3" 1
+assert "2*(3==3)" 2
 
 echo "OK"

@@ -60,6 +60,12 @@ enum BinaryOp {
   Sub,
   Mul,
   Div,
+  Eq,
+  Ne,
+  Lt,
+  Le,
+  Gt,
+  Ge,
 }
 
 #[derive(Debug, Clone)]
@@ -123,7 +129,16 @@ fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
       continue;
     }
 
-    if matches!(c, b'+' | b'-' | b'*' | b'/' | b'(' | b')') {
+    if let Some(op) = ["==", "!=", "<=", ">="]
+      .into_iter()
+      .find(|op| input[i..].starts_with(op))
+    {
+      tokens.push(Token::new(TokenKind::Punctuator, i, op.len(), None));
+      i += op.len();
+      continue;
+    }
+
+    if matches!(c, b'+' | b'-' | b'*' | b'/' | b'(' | b')' | b'<' | b'>') {
       tokens.push(Token::new(TokenKind::Punctuator, i, 1, None));
       i += 1;
       continue;
@@ -250,7 +265,67 @@ impl<'a> TokenStream<'a> {
 }
 
 fn parse_expr(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  parse_add(stream)
+  parse_equality(stream)
+}
+
+fn parse_equality(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  let mut node = parse_relational(stream)?;
+
+  loop {
+    let op_str = match stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Punctuator)
+      .map(|token| token_text(token, stream.source))
+    {
+      Some(symbol @ "==") => symbol,
+      Some(symbol @ "!=") => symbol,
+      _ => break,
+    };
+
+    let op = match op_str {
+      "==" => BinaryOp::Eq,
+      "!=" => BinaryOp::Ne,
+      _ => unreachable!(),
+    };
+
+    stream.skip(op_str)?;
+    let rhs = parse_relational(stream)?;
+    node = AstNode::binary(op, node, rhs);
+  }
+
+  Ok(node)
+}
+
+fn parse_relational(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  let mut node = parse_add(stream)?;
+
+  loop {
+    let op_str = match stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Punctuator)
+      .map(|token| token_text(token, stream.source))
+    {
+      Some(symbol @ "<") => symbol,
+      Some(symbol @ "<=") => symbol,
+      Some(symbol @ ">") => symbol,
+      Some(symbol @ ">=") => symbol,
+      _ => break,
+    };
+
+    let op = match op_str {
+      "<" => BinaryOp::Lt,
+      "<=" => BinaryOp::Le,
+      ">" => BinaryOp::Gt,
+      ">=" => BinaryOp::Ge,
+      _ => unreachable!(),
+    };
+
+    stream.skip(op_str)?;
+    let rhs = parse_add(stream)?;
+    node = AstNode::binary(op, node, rhs);
+  }
+
+  Ok(node)
 }
 
 fn parse_add(stream: &mut TokenStream) -> CompileResult<AstNode> {
@@ -352,6 +427,36 @@ fn gen_expr(node: &AstNode, asm: &mut String, _expr: &str) -> CompileResult<()> 
         BinaryOp::Div => {
           asm.push_str("    cqo\n");
           asm.push_str("    idiv %rdi\n");
+        }
+        BinaryOp::Eq => {
+          asm.push_str("    cmp %rdi, %rax\n");
+          asm.push_str("    sete %al\n");
+          asm.push_str("    movzbl %al, %eax\n");
+        }
+        BinaryOp::Ne => {
+          asm.push_str("    cmp %rdi, %rax\n");
+          asm.push_str("    setne %al\n");
+          asm.push_str("    movzbl %al, %eax\n");
+        }
+        BinaryOp::Lt => {
+          asm.push_str("    cmp %rdi, %rax\n");
+          asm.push_str("    setl %al\n");
+          asm.push_str("    movzbl %al, %eax\n");
+        }
+        BinaryOp::Le => {
+          asm.push_str("    cmp %rdi, %rax\n");
+          asm.push_str("    setle %al\n");
+          asm.push_str("    movzbl %al, %eax\n");
+        }
+        BinaryOp::Gt => {
+          asm.push_str("    cmp %rax, %rdi\n");
+          asm.push_str("    setl %al\n");
+          asm.push_str("    movzbl %al, %eax\n");
+        }
+        BinaryOp::Ge => {
+          asm.push_str("    cmp %rax, %rdi\n");
+          asm.push_str("    setle %al\n");
+          asm.push_str("    movzbl %al, %eax\n");
         }
       }
       asm.push_str("    push %rax\n");
