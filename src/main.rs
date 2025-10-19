@@ -62,6 +62,7 @@ enum AstKind {
   Sub,
   Mul,
   Div,
+  Neg,
   Num,
 }
 
@@ -80,6 +81,16 @@ impl AstNode {
       kind,
       lhs: Some(Box::new(lhs)),
       rhs: Some(Box::new(rhs)),
+      value: None,
+      loc,
+    }
+  }
+
+  fn new_unary(kind: AstKind, operand: AstNode, loc: usize) -> Self {
+    Self {
+      kind,
+      lhs: Some(Box::new(operand)),
+      rhs: None,
       value: None,
       loc,
     }
@@ -282,14 +293,14 @@ fn parse_add(stream: &mut TokenStream) -> CompileResult<AstNode> {
 }
 
 fn parse_mul(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  let mut node = parse_primary(stream)?;
+  let mut node = parse_unary(stream)?;
 
   loop {
     if let Some(op_token) = stream.equal("*") {
-      let rhs = parse_primary(stream)?;
+      let rhs = parse_unary(stream)?;
       node = AstNode::new_binary(AstKind::Mul, node, rhs, op_token.loc);
     } else if let Some(op_token) = stream.equal("/") {
-      let rhs = parse_primary(stream)?;
+      let rhs = parse_unary(stream)?;
       node = AstNode::new_binary(AstKind::Div, node, rhs, op_token.loc);
     } else {
       break;
@@ -297,6 +308,20 @@ fn parse_mul(stream: &mut TokenStream) -> CompileResult<AstNode> {
   }
 
   Ok(node)
+}
+
+fn parse_unary(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  if stream.equal("+").is_some() {
+    let operand = parse_unary(stream)?;
+    return Ok(operand);
+  }
+
+  if let Some(op_token) = stream.equal("-") {
+    let operand = parse_unary(stream)?;
+    return Ok(AstNode::new_unary(AstKind::Neg, operand, op_token.loc));
+  }
+
+  parse_primary(stream)
 }
 
 fn parse_primary(stream: &mut TokenStream) -> CompileResult<AstNode> {
@@ -340,8 +365,18 @@ fn gen_expr(node: &AstNode, asm: &mut String, expr: &str) -> CompileResult<()> {
           asm.push_str("    cqo\n");
           asm.push_str("    idiv %rdi\n");
         }
-        AstKind::Num => unreachable!(),
+        _ => unreachable!(),
       }
+      asm.push_str("    push %rax\n");
+    }
+    AstKind::Neg => {
+      let operand = node
+        .lhs
+        .as_ref()
+        .ok_or_else(|| CompileError::at(expr, node.loc, "internal error: missing unary operand"))?;
+      gen_expr(operand, asm, expr)?;
+      asm.push_str("    pop %rax\n");
+      asm.push_str("    neg %rax\n");
       asm.push_str("    push %rax\n");
     }
   }
