@@ -1,5 +1,32 @@
+use snafu::Snafu;
 use std::env;
 use std::process;
+
+type CompileResult<T> = Result<T, CompileError>;
+
+#[derive(Debug, Snafu)]
+enum CompileError {
+  #[snafu(display("{expr_line}\n{marker} {message}"))]
+  WithLocation {
+    expr_line: String,
+    marker: String,
+    message: String,
+  },
+}
+
+impl CompileError {
+  fn at(expr: &str, loc: usize, message: impl Into<String>) -> Self {
+    let expr_line = format!("'{expr}'");
+    let safe_loc = loc.min(expr.len());
+    let char_offset = expr[..safe_loc].chars().count() + 1; // account for opening quote
+    let marker = format!("{}^", " ".repeat(char_offset));
+    Self::WithLocation {
+      expr_line,
+      marker,
+      message: message.into(),
+    }
+  }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenKind {
@@ -29,7 +56,7 @@ impl Token {
   }
 }
 
-fn tokenize(input: &str) -> Result<Vec<Token>, String> {
+fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
   let mut tokens = Vec::new();
   let mut prev_index: Option<usize> = None;
   let bytes = input.as_bytes();
@@ -51,7 +78,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
       let text = &input[start..i];
       let value = text
         .parse::<i64>()
-        .map_err(|err| format!("invalid number '{text}': {err}"))?;
+        .map_err(|err| CompileError::at(input, start, format!("invalid number: {err}")))?;
       let idx = tokens.len();
       tokens.push(Token::new(TokenKind::Num, start, i - start, Some(value)));
       if let Some(prev) = prev_index {
@@ -73,7 +100,14 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
     }
 
     let invalid_char = input[i..].chars().next().unwrap_or('\0');
-    return Err(format!("invalid token: '{invalid_char}' at byte {i}"));
+    let message = if invalid_char.is_ascii_alphabetic() {
+      "expect a number".to_string()
+    } else if invalid_char == '\0' {
+      "unexpected end of input".to_string()
+    } else {
+      format!("invalid token: '{invalid_char}'")
+    };
+    return Err(CompileError::at(input, i, message));
   }
 
   let eof_index = tokens.len();
@@ -126,28 +160,46 @@ impl<'a> TokenStream<'a> {
     false
   }
 
-  fn skip(&mut self, s: &str) -> Result<(), String> {
+  fn skip(&mut self, s: &str) -> CompileResult<()> {
     if self.equal(s) {
       Ok(())
     } else {
-      let got = describe_token(self.tokens.get(self.pos), self.source);
-      Err(format!("expected \"{s}\", but got \"{got}\""))
+      let (loc, got) = match self.tokens.get(self.pos) {
+        Some(token) => (token.loc, describe_token(Some(token), self.source)),
+        None => (self.source.len(), "EOF".to_string()),
+      };
+      Err(CompileError::at(
+        self.source,
+        loc,
+        format!("expected \"{s}\", but got \"{got}\""),
+      ))
     }
   }
 
-  fn get_number(&mut self) -> Result<i64, String> {
-    let token = match self.tokens.get(self.pos) {
-      Some(token) => token.clone(),
-      None => return Err("expected a number, but reached EOF".to_string()),
-    };
-
-    if token.kind == TokenKind::Num {
-      self.pos += 1;
-      Ok(token.value.expect("number token must have a value"))
-    } else {
-      let got = describe_token(Some(&token), self.source);
-      Err(format!("expected a number, but got \"{got}\""))
+  fn get_number(&mut self) -> CompileResult<i64> {
+    if self.pos >= self.tokens.len() {
+      return Err(CompileError::at(
+        self.source,
+        self.source.len(),
+        "expected a number, but reached end of input",
+      ));
     }
+
+    if self.tokens[self.pos].kind == TokenKind::Num {
+      let value = self.tokens[self.pos]
+        .value
+        .expect("number token must have a value");
+      self.pos += 1;
+      return Ok(value);
+    }
+
+    let token = &self.tokens[self.pos];
+    let got = describe_token(Some(token), self.source);
+    Err(CompileError::at(
+      self.source,
+      token.loc,
+      format!("expected a number, but got \"{got}\""),
+    ))
   }
 
   fn is_eof(&self) -> bool {
@@ -158,12 +210,12 @@ impl<'a> TokenStream<'a> {
   }
 }
 
-fn generate_assembly(expr: &str) -> Result<String, String> {
+fn generate_assembly(expr: &str) -> CompileResult<String> {
   let tokens = tokenize(expr)?;
   let mut stream = TokenStream::new(tokens, expr);
 
   if stream.is_eof() {
-    return Err("expression is empty".to_string());
+    return Err(CompileError::at(expr, 0, "expression is empty"));
   }
 
   let mut asm = String::new();
