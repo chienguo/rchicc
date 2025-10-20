@@ -11,6 +11,7 @@ use crate::error::{CompileError, CompileResult};
 pub enum TokenKind {
   Punctuator,
   Num,
+  Ident,
   Eof,
 }
 
@@ -71,9 +72,15 @@ pub fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
       continue;
     }
 
+    if c.is_ascii_lowercase() {
+      tokens.push(Token::new(TokenKind::Ident, i, 1, None));
+      i += 1;
+      continue;
+    }
+
     if matches!(
       c,
-      b'+' | b'-' | b'*' | b'/' | b'(' | b')' | b'<' | b'>' | b';'
+      b'+' | b'-' | b'*' | b'/' | b'(' | b')' | b'<' | b'>' | b'=' | b';'
     ) {
       tokens.push(Token::new(TokenKind::Punctuator, i, 1, None));
       i += 1;

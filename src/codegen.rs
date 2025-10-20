@@ -12,10 +12,15 @@ pub fn generate(program: &Stmt) -> String {
   let mut asm = String::new();
   asm.push_str(".global main\n");
   asm.push_str("main:\n");
+  asm.push_str("    push %rbp\n");
+  asm.push_str("    mov %rsp, %rbp\n");
+  asm.push_str("    sub $208, %rsp\n");
 
   emit_stmt(program, &mut asm);
 
   asm.push_str("    pop %rax\n");
+  asm.push_str("    mov %rbp, %rsp\n");
+  asm.push_str("    pop %rbp\n");
   asm.push_str("    ret\n");
 
   asm
@@ -37,6 +42,11 @@ fn emit_expr(node: &AstNode, asm: &mut String) {
   match node {
     AstNode::Num { value } => {
       asm.push_str(&format!("    mov ${value}, %rax\n"));
+      asm.push_str("    push %rax\n");
+    }
+    AstNode::Var { name } => {
+      let offset = var_offset(*name);
+      asm.push_str(&format!("    mov -{offset}(%rbp), %rax\n"));
       asm.push_str("    push %rax\n");
     }
     AstNode::Binary { op, lhs, rhs } => {
@@ -85,6 +95,14 @@ fn emit_expr(node: &AstNode, asm: &mut String) {
       }
       asm.push_str("    push %rax\n");
     }
+    AstNode::Assign { lhs, rhs, .. } => {
+      emit_addr(lhs, asm);
+      emit_expr(rhs, asm);
+      asm.push_str("    pop %rdi\n");
+      asm.push_str("    pop %rax\n");
+      asm.push_str("    mov %rdi, (%rax)\n");
+      asm.push_str("    push %rdi\n");
+    }
     AstNode::Neg { operand } => {
       emit_expr(operand, asm);
       asm.push_str("    pop %rax\n");
@@ -92,4 +110,24 @@ fn emit_expr(node: &AstNode, asm: &mut String) {
       asm.push_str("    push %rax\n");
     }
   }
+}
+
+fn emit_addr(node: &AstNode, asm: &mut String) {
+  match node {
+    AstNode::Var { name } => {
+      let offset = var_offset(*name);
+      asm.push_str(&format!("    lea -{offset}(%rbp), %rax\n"));
+      asm.push_str("    push %rax\n");
+    }
+    _ => panic!("not an lvalue"),
+  }
+}
+
+fn var_offset(name: char) -> i64 {
+  if !name.is_ascii_lowercase() {
+    panic!("unsupported variable name: {name}");
+  }
+
+  let index = (name as u8 - b'a') as i64 + 1;
+  index * 8
 }

@@ -67,5 +67,7 @@ assert "1;2;" 2
 assert "1;2;3;" 3
 assert "1+2;3+4;" 7
 assert "10;20;30+5;" 35
+assert "a=3; a;" 3
+assert "a=3;z=5;a+z;" 8
 
 echo "OK"

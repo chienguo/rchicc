@@ -29,6 +29,9 @@ pub enum AstNode {
   Num {
     value: i64,
   },
+  Var {
+    name: char,
+  },
   Neg {
     operand: Box<AstNode>,
   },
@@ -37,11 +40,20 @@ pub enum AstNode {
     lhs: Box<AstNode>,
     rhs: Box<AstNode>,
   },
+  Assign {
+    lhs: Box<AstNode>,
+    rhs: Box<AstNode>,
+    name: Option<char>,
+  },
 }
 
 impl AstNode {
   pub fn number(value: i64) -> Self {
     Self::Num { value }
+  }
+
+  pub fn var(name: char) -> Self {
+    Self::Var { name }
   }
 
   pub fn unary_neg(operand: AstNode) -> Self {
@@ -55,6 +67,14 @@ impl AstNode {
       op,
       lhs: Box::new(lhs),
       rhs: Box::new(rhs),
+    }
+  }
+
+  pub fn assign(lhs: AstNode, rhs: AstNode, name: Option<char>) -> Self {
+    Self::Assign {
+      lhs: Box::new(lhs),
+      rhs: Box::new(rhs),
+      name,
     }
   }
 }
@@ -139,7 +159,22 @@ fn parse_expr_stmt(stream: &mut TokenStream) -> CompileResult<Box<Stmt>> {
 }
 
 fn parse_expr(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  parse_equality(stream)
+  parse_assign(stream)
+}
+
+fn parse_assign(stream: &mut TokenStream) -> CompileResult<AstNode> {
+  let node = parse_equality(stream)?;
+
+  if stream.equal("=") {
+    let lhs_name = match &node {
+      AstNode::Var { name } => Some(*name),
+      _ => None,
+    };
+    let rhs = parse_assign(stream)?;
+    return Ok(AstNode::assign(node, rhs, lhs_name));
+  }
+
+  Ok(node)
 }
 
 fn parse_equality(stream: &mut TokenStream) -> CompileResult<AstNode> {
@@ -278,6 +313,14 @@ fn parse_primary(stream: &mut TokenStream) -> CompileResult<AstNode> {
     stream.skip(")")?;
     Ok(node)
   } else {
+    if matches!(
+      stream.peek().map(|token| token.kind),
+      Some(TokenKind::Ident)
+    ) {
+      let (name, _) = stream.get_ident()?;
+      return Ok(AstNode::var(name));
+    }
+
     let (value, _) = stream.get_number()?;
     Ok(AstNode::number(value))
   }
@@ -362,15 +405,50 @@ impl<'a> TokenStream<'a> {
       return Ok((value, loc));
     }
 
-    let token = self
-      .tokens
-      .get(self.pos)
-      .expect("token stream must contain EoF sentinel");
+    let Some(token) = self.tokens.get(self.pos) else {
+      return Err(CompileError::at(
+        self.source,
+        self.source.len(),
+        "unexpected end of input while parsing number",
+      ));
+    };
     let got = describe_token(Some(token), self.source);
     Err(CompileError::at(
       self.source,
       token.loc,
       format!("expected a number, but got \"{got}\""),
+    ))
+  }
+
+  /// Parse the current token as an identifier.
+  fn get_ident(&mut self) -> CompileResult<(char, usize)> {
+    if let Some(token) = self.tokens.get(self.pos)
+      && token.kind == TokenKind::Ident
+    {
+      let Some(ident) = token_text(token, self.source).chars().next() else {
+        return Err(CompileError::at(
+          self.source,
+          token.loc,
+          "identifier is missing characters",
+        ));
+      };
+      let loc = token.loc;
+      self.pos += 1;
+      return Ok((ident, loc));
+    }
+
+    let Some(token) = self.tokens.get(self.pos) else {
+      return Err(CompileError::at(
+        self.source,
+        self.source.len(),
+        "unexpected end of input while parsing identifier",
+      ));
+    };
+    let got = describe_token(Some(token), self.source);
+    Err(CompileError::at(
+      self.source,
+      token.loc,
+      format!("expected an identifier, but got \"{got}\""),
     ))
   }
 
