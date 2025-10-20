@@ -2,21 +2,23 @@
 //!
 //! The emitter currently uses a simple stack machine: every expression leaves
 //! a single value on the stack and statements pop intermediate results as we
-//! chain them. This mirrors chibicc's early stages and keeps the code easy to
-//! audit.
+//! chain them. Locals live on the stack frame and are addressed relative to
+//! `%rbp`.
 
-use crate::parser::{AstNode, BinaryOp, Stmt};
+use crate::parser::{AstNode, BinaryOp, Function, Stmt};
 
-/// Emit assembly for a statement list.
-pub fn generate(program: &Stmt) -> String {
+/// Emit assembly for a function.
+pub fn generate(func: &Function) -> String {
   let mut asm = String::new();
   asm.push_str(".global main\n");
   asm.push_str("main:\n");
   asm.push_str("    push %rbp\n");
   asm.push_str("    mov %rsp, %rbp\n");
-  asm.push_str("    sub $208, %rsp\n");
+  if func.stack_size > 0 {
+    asm.push_str(&format!("    sub ${}, %rsp\n", func.stack_size));
+  }
 
-  emit_stmt(program, &mut asm);
+  emit_stmt(&func.body, func, &mut asm);
 
   asm.push_str("    pop %rax\n");
   asm.push_str("    mov %rbp, %rsp\n");
@@ -28,30 +30,30 @@ pub fn generate(program: &Stmt) -> String {
 
 /// Walk the statement list, emitting code for each expression and discarding
 /// intermediate results to keep stack balance intact.
-fn emit_stmt(stmt: &Stmt, asm: &mut String) {
-  emit_expr(&stmt.expr, asm);
+fn emit_stmt(stmt: &Stmt, func: &Function, asm: &mut String) {
+  emit_expr(&stmt.expr, func, asm);
 
   if let Some(next) = stmt.next.as_deref() {
     asm.push_str("    pop %rax\n");
-    emit_stmt(next, asm);
+    emit_stmt(next, func, asm);
   }
 }
 
 /// Emit stack-based code for a single expression node.
-fn emit_expr(node: &AstNode, asm: &mut String) {
+fn emit_expr(node: &AstNode, func: &Function, asm: &mut String) {
   match node {
     AstNode::Num { value } => {
       asm.push_str(&format!("    mov ${value}, %rax\n"));
       asm.push_str("    push %rax\n");
     }
-    AstNode::Var { name } => {
-      let offset = var_offset(*name);
+    AstNode::Var { obj } => {
+      let offset = func.locals[*obj].offset;
       asm.push_str(&format!("    mov -{offset}(%rbp), %rax\n"));
       asm.push_str("    push %rax\n");
     }
     AstNode::Binary { op, lhs, rhs } => {
-      emit_expr(lhs, asm);
-      emit_expr(rhs, asm);
+      emit_expr(lhs, func, asm);
+      emit_expr(rhs, func, asm);
       asm.push_str("    pop %rdi\n");
       asm.push_str("    pop %rax\n");
       match op {
@@ -95,16 +97,16 @@ fn emit_expr(node: &AstNode, asm: &mut String) {
       }
       asm.push_str("    push %rax\n");
     }
-    AstNode::Assign { lhs, rhs, .. } => {
-      emit_addr(lhs, asm);
-      emit_expr(rhs, asm);
+    AstNode::Assign { lhs, rhs } => {
+      emit_addr(lhs, func, asm);
+      emit_expr(rhs, func, asm);
       asm.push_str("    pop %rdi\n");
       asm.push_str("    pop %rax\n");
       asm.push_str("    mov %rdi, (%rax)\n");
       asm.push_str("    push %rdi\n");
     }
     AstNode::Neg { operand } => {
-      emit_expr(operand, asm);
+      emit_expr(operand, func, asm);
       asm.push_str("    pop %rax\n");
       asm.push_str("    neg %rax\n");
       asm.push_str("    push %rax\n");
@@ -112,22 +114,13 @@ fn emit_expr(node: &AstNode, asm: &mut String) {
   }
 }
 
-fn emit_addr(node: &AstNode, asm: &mut String) {
+fn emit_addr(node: &AstNode, func: &Function, asm: &mut String) {
   match node {
-    AstNode::Var { name } => {
-      let offset = var_offset(*name);
+    AstNode::Var { obj } => {
+      let offset = func.locals[*obj].offset;
       asm.push_str(&format!("    lea -{offset}(%rbp), %rax\n"));
       asm.push_str("    push %rax\n");
     }
     _ => panic!("not an lvalue"),
   }
-}
-
-fn var_offset(name: char) -> i64 {
-  if !name.is_ascii_lowercase() {
-    panic!("unsupported variable name: {name}");
-  }
-
-  let index = (name as u8 - b'a') as i64 + 1;
-  index * 8
 }

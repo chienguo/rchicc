@@ -72,9 +72,13 @@ pub fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
       continue;
     }
 
-    if c.is_ascii_lowercase() {
-      tokens.push(Token::new(TokenKind::Ident, i, 1, None));
+    if c.is_ascii_alphabetic() || c == b'_' {
+      let start = i;
       i += 1;
+      while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+      }
+      tokens.push(Token::new(TokenKind::Ident, start, i - start, None));
       continue;
     }
 

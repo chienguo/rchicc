@@ -7,6 +7,7 @@
 
 use crate::error::{CompileError, CompileResult};
 use crate::tokenizer::{Token, TokenKind, describe_token, token_text};
+use std::collections::HashMap;
 
 /// Binary operators recognised by the language.
 #[derive(Debug, Clone, Copy)]
@@ -30,7 +31,7 @@ pub enum AstNode {
     value: i64,
   },
   Var {
-    name: char,
+    obj: usize,
   },
   Neg {
     operand: Box<AstNode>,
@@ -43,7 +44,6 @@ pub enum AstNode {
   Assign {
     lhs: Box<AstNode>,
     rhs: Box<AstNode>,
-    name: Option<char>,
   },
 }
 
@@ -52,8 +52,8 @@ impl AstNode {
     Self::Num { value }
   }
 
-  pub fn var(name: char) -> Self {
-    Self::Var { name }
+  pub fn var(obj: usize) -> Self {
+    Self::Var { obj }
   }
 
   pub fn unary_neg(operand: AstNode) -> Self {
@@ -70,11 +70,10 @@ impl AstNode {
     }
   }
 
-  pub fn assign(lhs: AstNode, rhs: AstNode, name: Option<char>) -> Self {
+  pub fn assign(lhs: AstNode, rhs: AstNode) -> Self {
     Self::Assign {
       lhs: Box::new(lhs),
       rhs: Box::new(rhs),
-      name,
     }
   }
 }
@@ -85,6 +84,28 @@ impl AstNode {
 pub struct Stmt {
   pub expr: AstNode,
   pub next: Option<Box<Stmt>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Obj {
+  pub name: String,
+  pub offset: i64,
+}
+
+impl Obj {
+  pub fn new(name: impl Into<String>) -> Self {
+    Self {
+      name: name.into(),
+      offset: 0,
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct Function {
+  pub body: Box<Stmt>,
+  pub locals: Vec<Obj>,
+  pub stack_size: i64,
 }
 
 impl Stmt {
@@ -111,14 +132,15 @@ impl<'a> Iterator for StmtIter<'a> {
 }
 
 /// Parse a sequence of statements from the token stream.
-pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Box<Stmt>> {
+pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Function> {
   let mut stream = TokenStream::new(tokens, source);
 
   if stream.is_eof() {
     return Err(CompileError::at(source, 0, "program is empty"));
   }
 
-  let stmts = parse_stmt(&mut stream)?;
+  let mut ctx = ParserContext::new();
+  let body = parse_stmt(&mut stream, &mut ctx)?;
 
   if !stream.is_eof() {
     let token = stream.current().ok_or_else(|| {
@@ -136,49 +158,104 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Box<Stmt>> {
     ));
   }
 
-  Ok(stmts)
+  let stack_size = ctx.assign_offsets();
+
+  Ok(Function {
+    body,
+    locals: ctx.locals,
+    stack_size,
+  })
 }
 
-fn parse_stmt(stream: &mut TokenStream) -> CompileResult<Box<Stmt>> {
-  parse_expr_stmt(stream)
+struct ParserContext {
+  locals: Vec<Obj>,
+  map: HashMap<String, usize>,
 }
 
-fn parse_expr_stmt(stream: &mut TokenStream) -> CompileResult<Box<Stmt>> {
-  // The only statement form today is an expression followed by a semicolon.
-  // Keeping this isolated makes it trivial to bolt on new statement kinds.
-  let expr = parse_expr(stream)?;
+impl ParserContext {
+  fn new() -> Self {
+    Self {
+      locals: Vec::new(),
+      map: HashMap::new(),
+    }
+  }
+
+  fn get_or_create_local(&mut self, name: &str) -> usize {
+    if let Some(&index) = self.map.get(name) {
+      return index;
+    }
+    let index = self.locals.len();
+    self.locals.push(Obj::new(name));
+    self.map.insert(name.to_string(), index);
+    index
+  }
+
+  fn assign_offsets(&mut self) -> i64 {
+    let mut offset: i64 = 0;
+    for obj in &mut self.locals {
+      offset += 8;
+      obj.offset = offset;
+    }
+    align_to(offset, 16)
+  }
+}
+
+fn align_to(n: i64, align: i64) -> i64 {
+  if align == 0 {
+    return n;
+  }
+  ((n + align - 1) / align) * align
+}
+
+fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  parse_expr_stmt(stream, ctx)
+}
+
+fn parse_expr_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  let expr = parse_expr(stream, ctx)?;
   stream.skip(";")?;
 
   let next = if stream.is_eof() {
     None
   } else {
-    Some(parse_stmt(stream)?)
+    Some(parse_stmt(stream, ctx)?)
   };
 
   Ok(Box::new(Stmt { expr, next }))
 }
 
-fn parse_expr(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  parse_assign(stream)
+fn parse_expr(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
+  parse_assign(stream, ctx)
 }
 
-fn parse_assign(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  let node = parse_equality(stream)?;
+fn parse_assign(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
+  let node = parse_equality(stream, ctx)?;
 
-  if stream.equal("=") {
-    let lhs_name = match &node {
-      AstNode::Var { name } => Some(*name),
-      _ => None,
+  if matches!(
+    stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Punctuator)
+      .map(|token| token_text(token, stream.source)),
+    Some("=")
+  ) {
+    let assign_loc = stream.current_loc();
+    stream.skip("=")?;
+    let rhs = parse_assign(stream, ctx)?;
+    return match node {
+      AstNode::Var { .. } => Ok(AstNode::assign(node, rhs)),
+      _ => Err(CompileError::at(
+        stream.source,
+        assign_loc,
+        "left-hand side of assignment is not a variable",
+      )),
     };
-    let rhs = parse_assign(stream)?;
-    return Ok(AstNode::assign(node, rhs, lhs_name));
   }
 
   Ok(node)
 }
 
-fn parse_equality(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  let mut node = parse_relational(stream)?;
+fn parse_equality(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
+  let mut node = parse_relational(stream, ctx)?;
 
   loop {
     let op_str = match stream
@@ -198,15 +275,15 @@ fn parse_equality(stream: &mut TokenStream) -> CompileResult<AstNode> {
     };
 
     stream.skip(op_str)?;
-    let rhs = parse_relational(stream)?;
+    let rhs = parse_relational(stream, ctx)?;
     node = AstNode::binary(op, node, rhs);
   }
 
   Ok(node)
 }
 
-fn parse_relational(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  let mut node = parse_add(stream)?;
+fn parse_relational(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
+  let mut node = parse_add(stream, ctx)?;
 
   loop {
     let op_str = match stream
@@ -230,15 +307,15 @@ fn parse_relational(stream: &mut TokenStream) -> CompileResult<AstNode> {
     };
 
     stream.skip(op_str)?;
-    let rhs = parse_add(stream)?;
+    let rhs = parse_add(stream, ctx)?;
     node = AstNode::binary(op, node, rhs);
   }
 
   Ok(node)
 }
 
-fn parse_add(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  let mut node = parse_mul(stream)?;
+fn parse_add(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
+  let mut node = parse_mul(stream, ctx)?;
 
   loop {
     let op_str = match stream
@@ -258,15 +335,15 @@ fn parse_add(stream: &mut TokenStream) -> CompileResult<AstNode> {
     };
 
     stream.skip(op_str)?;
-    let rhs = parse_mul(stream)?;
+    let rhs = parse_mul(stream, ctx)?;
     node = AstNode::binary(op, node, rhs);
   }
 
   Ok(node)
 }
 
-fn parse_mul(stream: &mut TokenStream) -> CompileResult<AstNode> {
-  let mut node = parse_unary(stream)?;
+fn parse_mul(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
+  let mut node = parse_unary(stream, ctx)?;
 
   loop {
     let op_str = match stream
@@ -286,30 +363,30 @@ fn parse_mul(stream: &mut TokenStream) -> CompileResult<AstNode> {
     };
 
     stream.skip(op_str)?;
-    let rhs = parse_unary(stream)?;
+    let rhs = parse_unary(stream, ctx)?;
     node = AstNode::binary(op, node, rhs);
   }
 
   Ok(node)
 }
 
-fn parse_unary(stream: &mut TokenStream) -> CompileResult<AstNode> {
+fn parse_unary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
   if stream.equal("+") {
-    let operand = parse_unary(stream)?;
+    let operand = parse_unary(stream, ctx)?;
     return Ok(operand);
   }
 
   if stream.equal("-") {
-    let operand = parse_unary(stream)?;
+    let operand = parse_unary(stream, ctx)?;
     return Ok(AstNode::unary_neg(operand));
   }
 
-  parse_primary(stream)
+  parse_primary(stream, ctx)
 }
 
-fn parse_primary(stream: &mut TokenStream) -> CompileResult<AstNode> {
+fn parse_primary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
   if stream.equal("(") {
-    let node = parse_expr(stream)?;
+    let node = parse_expr(stream, ctx)?;
     stream.skip(")")?;
     Ok(node)
   } else {
@@ -317,13 +394,43 @@ fn parse_primary(stream: &mut TokenStream) -> CompileResult<AstNode> {
       stream.peek().map(|token| token.kind),
       Some(TokenKind::Ident)
     ) {
-      let (name, _) = stream.get_ident()?;
-      return Ok(AstNode::var(name));
+      let (name, loc) = stream.get_ident()?;
+      validate_ident(&name, stream.source, loc)?;
+      let index = ctx.get_or_create_local(&name);
+      return Ok(AstNode::var(index));
     }
 
     let (value, _) = stream.get_number()?;
     Ok(AstNode::number(value))
   }
+}
+
+fn validate_ident(name: &str, source: &str, loc: usize) -> CompileResult<()> {
+  let mut chars = name.chars();
+  let Some(first) = chars.next() else {
+    return Err(CompileError::at(source, loc, "identifier is empty"));
+  };
+
+  let valid_start = first.is_ascii_alphabetic() || first == '_';
+  if !valid_start {
+    return Err(CompileError::at(
+      source,
+      loc,
+      format!("identifier '{name}' must start with a letter or underscore"),
+    ));
+  }
+
+  for (i, ch) in chars.enumerate() {
+    if !(ch.is_ascii_alphanumeric() || ch == '_') {
+      return Err(CompileError::at(
+        source,
+        loc + i + 1,
+        format!("identifier contains invalid character '{ch}'"),
+      ));
+    }
+  }
+
+  Ok(())
 }
 
 /// Lightweight cursor over the token vector.
@@ -349,6 +456,14 @@ impl<'a> TokenStream<'a> {
 
   fn current(&self) -> Option<&Token> {
     self.peek()
+  }
+
+  fn current_loc(&self) -> usize {
+    self
+      .tokens
+      .get(self.pos)
+      .map(|token| token.loc)
+      .unwrap_or(self.source.len())
   }
 
   /// Consume the current token if it matches the provided punctuator.
@@ -421,20 +536,21 @@ impl<'a> TokenStream<'a> {
   }
 
   /// Parse the current token as an identifier.
-  fn get_ident(&mut self) -> CompileResult<(char, usize)> {
+  fn get_ident(&mut self) -> CompileResult<(String, usize)> {
     if let Some(token) = self.tokens.get(self.pos)
       && token.kind == TokenKind::Ident
     {
-      let Some(ident) = token_text(token, self.source).chars().next() else {
+      let text = token_text(token, self.source);
+      if text.is_empty() {
         return Err(CompileError::at(
           self.source,
           token.loc,
           "identifier is missing characters",
         ));
-      };
+      }
       let loc = token.loc;
       self.pos += 1;
-      return Ok((ident, loc));
+      return Ok((text.to_string(), loc));
     }
 
     let Some(token) = self.tokens.get(self.pos) else {
