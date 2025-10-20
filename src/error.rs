@@ -1,3 +1,9 @@
+//! Shared error utilities used across the compilation pipeline.
+//!
+//! Diagnostics are kept lightweight on purpose – these routines format
+//! messages in a style reminiscent of chibicc, pointing at the offending
+//! byte with a caret.
+
 use snafu::Snafu;
 
 pub type CompileResult<T> = Result<T, CompileError>;
@@ -13,6 +19,7 @@ pub enum CompileError {
 }
 
 impl CompileError {
+  /// Construct an error anchored at a specific byte offset in the source.
   pub fn at(expr: &str, loc: usize, message: impl Into<String>) -> Self {
     let expr_line = format!("'{expr}'");
     let safe_loc = loc.min(expr.len());

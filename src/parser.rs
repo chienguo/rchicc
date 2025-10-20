@@ -1,6 +1,14 @@
+//! Recursive-descent parser producing a statement list and expression AST.
+//!
+//! The parser mirrors the classic chibicc structure: we maintain a
+//! precedence-climbing set of helpers and expose a thin statement layer so
+//! sequencing lives outside the expression tree. This keeps the grammar easy
+//! to extend with additional statement kinds later on.
+
 use crate::error::{CompileError, CompileResult};
 use crate::tokenizer::{Token, TokenKind, describe_token, token_text};
 
+/// Binary operators recognised by the language.
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
   Add,
@@ -15,6 +23,7 @@ pub enum BinaryOp {
   Ge,
 }
 
+/// Expression tree produced by the parser.
 #[derive(Debug, Clone)]
 pub enum AstNode {
   Num {
@@ -50,12 +59,38 @@ impl AstNode {
   }
 }
 
+/// Singly-linked list of statements. Each node holds exactly one expression
+/// statement for now, but the structure leaves room to grow.
 #[derive(Debug, Clone)]
 pub struct Stmt {
   pub expr: AstNode,
   pub next: Option<Box<Stmt>>,
 }
 
+impl Stmt {
+  /// Iterate statements in order. Useful for debugging and future passes.
+  pub fn iter(&self) -> StmtIter<'_> {
+    StmtIter {
+      current: Some(self),
+    }
+  }
+}
+
+pub struct StmtIter<'a> {
+  current: Option<&'a Stmt>,
+}
+
+impl<'a> Iterator for StmtIter<'a> {
+  type Item = &'a AstNode;
+
+  fn next(&mut self) -> Option<Self::Item> {
+    let stmt = self.current?;
+    self.current = stmt.next.as_deref();
+    Some(&stmt.expr)
+  }
+}
+
+/// Parse a sequence of statements from the token stream.
 pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Box<Stmt>> {
   let mut stream = TokenStream::new(tokens, source);
 
@@ -89,6 +124,8 @@ fn parse_stmt(stream: &mut TokenStream) -> CompileResult<Box<Stmt>> {
 }
 
 fn parse_expr_stmt(stream: &mut TokenStream) -> CompileResult<Box<Stmt>> {
+  // The only statement form today is an expression followed by a semicolon.
+  // Keeping this isolated makes it trivial to bolt on new statement kinds.
   let expr = parse_expr(stream)?;
   stream.skip(";")?;
 
@@ -246,6 +283,7 @@ fn parse_primary(stream: &mut TokenStream) -> CompileResult<AstNode> {
   }
 }
 
+/// Lightweight cursor over the token vector.
 struct TokenStream<'a> {
   tokens: Vec<Token>,
   source: &'a str,
@@ -253,6 +291,7 @@ struct TokenStream<'a> {
 }
 
 impl<'a> TokenStream<'a> {
+  /// Take ownership of the token stream; the parser will advance `pos` as it consumes input.
   fn new(tokens: Vec<Token>, source: &'a str) -> Self {
     Self {
       tokens,
@@ -269,6 +308,7 @@ impl<'a> TokenStream<'a> {
     self.peek()
   }
 
+  /// Consume the current token if it matches the provided punctuator.
   fn equal(&mut self, op: &str) -> bool {
     if let Some(token) = self.peek()
       && token.kind == TokenKind::Punctuator
@@ -297,6 +337,7 @@ impl<'a> TokenStream<'a> {
     }
   }
 
+  /// Parse the current token as an integer literal returning its value and location.
   fn get_number(&mut self) -> CompileResult<(i64, usize)> {
     if self.pos >= self.tokens.len() {
       return Err(CompileError::at(

@@ -1,5 +1,13 @@
+//! Code generation: lower the parsed AST into AT&T x86-64 assembly.
+//!
+//! The emitter currently uses a simple stack machine: every expression leaves
+//! a single value on the stack and statements pop intermediate results as we
+//! chain them. This mirrors chibicc's early stages and keeps the code easy to
+//! audit.
+
 use crate::parser::{AstNode, BinaryOp, Stmt};
 
+/// Emit assembly for a statement list.
 pub fn generate(program: &Stmt) -> String {
   let mut asm = String::new();
   asm.push_str(".global main\n");
@@ -13,6 +21,8 @@ pub fn generate(program: &Stmt) -> String {
   asm
 }
 
+/// Walk the statement list, emitting code for each expression and discarding
+/// intermediate results to keep stack balance intact.
 fn emit_stmt(stmt: &Stmt, asm: &mut String) {
   emit_expr(&stmt.expr, asm);
 
@@ -22,6 +32,7 @@ fn emit_stmt(stmt: &Stmt, asm: &mut String) {
   }
 }
 
+/// Emit stack-based code for a single expression node.
 fn emit_expr(node: &AstNode, asm: &mut String) {
   match node {
     AstNode::Num { value } => {

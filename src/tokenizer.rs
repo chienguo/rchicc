@@ -1,5 +1,12 @@
+//! Lexical analysis: turns the raw input string into a vector of tokens.
+//!
+//! The tokenizer is intentionally tiny – it knows nothing about semantics
+//! beyond recognising operators and numeric literals. Multi-character
+//! punctuators are matched before single-character ones to avoid ambiguity.
+
 use crate::error::{CompileError, CompileResult};
 
+/// Kinds of tokens recognised by the front-end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
   Punctuator,
@@ -7,6 +14,7 @@ pub enum TokenKind {
   Eof,
 }
 
+/// Thin wrapper for lexical information needed by later stages.
 #[derive(Debug, Clone)]
 pub struct Token {
   pub kind: TokenKind,
@@ -16,6 +24,7 @@ pub struct Token {
 }
 
 impl Token {
+  /// Convenience constructor to keep the `tokenize` loop readable.
   pub fn new(kind: TokenKind, loc: usize, len: usize, value: Option<i64>) -> Self {
     Self {
       kind,
@@ -26,6 +35,7 @@ impl Token {
   }
 }
 
+/// Lex the input into a flat vector of tokens terminated by an `Eof` marker.
 pub fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
   let mut tokens = Vec::new();
   let bytes = input.as_bytes();
@@ -85,11 +95,13 @@ pub fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
   Ok(tokens)
 }
 
+/// Return the slice from the source that produced this token.
 pub fn token_text<'a>(token: &Token, source: &'a str) -> &'a str {
   let end = token.loc + token.len;
   &source[token.loc..end]
 }
 
+/// Human-friendly description used in diagnostics.
 pub fn describe_token(token: Option<&Token>, source: &str) -> String {
   match token {
     Some(t) => match t.kind {
