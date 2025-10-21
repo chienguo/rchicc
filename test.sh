@@ -84,6 +84,7 @@ assert "{ a=3; return a;}" 3
 assert "{ a=b=3; return a+b; }" 6
 assert "{ foo123=3; bar=5; return foo123+bar; }" 8
 assert "{ 1; 2; return 3;}" 3
+assert "{ ; ; return 3;}" 3
 # assert "{ return fo; }" 12
 
 

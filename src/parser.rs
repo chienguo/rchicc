@@ -311,6 +311,12 @@ fn parse_block_body(
 }
 
 fn parse_expr_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  if stream.equal(";") {
+    return Ok(Box::new(Stmt {
+      expr: AstNode::Block { body: None },
+      next: None,
+    }));
+  }
   let expr = parse_expr(stream, ctx)?;
   stream.skip(";")?;
 
