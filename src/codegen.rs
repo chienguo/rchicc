@@ -21,6 +21,7 @@ pub fn generate(func: &Function) -> String {
   emit_stmt(&func.body, func, &mut asm);
 
   asm.push_str("    pop %rax\n");
+  asm.push_str(".L.return:\n");
   asm.push_str("    mov %rbp, %rsp\n");
   asm.push_str("    pop %rbp\n");
   asm.push_str("    ret\n");
@@ -31,10 +32,14 @@ pub fn generate(func: &Function) -> String {
 /// Walk the statement list, emitting code for each expression and discarding
 /// intermediate results to keep stack balance intact.
 fn emit_stmt(stmt: &Stmt, func: &Function, asm: &mut String) {
+  let is_return = matches!(stmt.expr, AstNode::Return { .. });
   emit_expr(&stmt.expr, func, asm);
 
-  if let Some(next) = stmt.next.as_deref() {
+  if !is_return && stmt.next.is_some() {
     asm.push_str("    pop %rax\n");
+  }
+
+  if let Some(next) = stmt.next.as_deref() {
     emit_stmt(next, func, asm);
   }
 }
@@ -104,6 +109,11 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String) {
       asm.push_str("    pop %rax\n");
       asm.push_str("    mov %rdi, (%rax)\n");
       asm.push_str("    push %rdi\n");
+    }
+    AstNode::Return { value } => {
+      emit_expr(value, func, asm);
+      asm.push_str("    pop %rax\n");
+      asm.push_str("    jmp .L.return\n");
     }
     AstNode::Neg { operand } => {
       emit_expr(operand, func, asm);

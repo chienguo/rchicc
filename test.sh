@@ -58,19 +58,24 @@ assert "4<5;" 1
 assert "5<5;" 0
 assert "4<=4;" 1
 assert "5>=3;" 1
-assert "3>=4;" 0
+assert "return 3>=4;" 0
 assert "3>2;" 1
-assert "3>5;" 0
+assert "return 3>5;" 0
 assert "1+2==3;" 1
 assert "2*(3==3);" 2
 assert "1;2;" 2
 assert "1;2;3;" 3
 assert "1+2;3+4;" 7
-assert "10;20;30+5;" 35
+assert "10;20;return 30+5;" 35
 assert "a=3; a;" 3
 assert "a=3;z=5;a+z;" 8
 assert "foo=7; foo;" 7
 assert "foo=1;bar=2;foo+bar;" 3
-assert "foo123=3; bar=5; foo123+bar;" 8
+assert "foo123=3; bar=5; return foo123+bar;" 8
+assert "return 3;" 3
+assert "x=2; return x+4;" 6
+assert "return 2; x = 10;" 2
+assert "return 1; 2; 3;" 1
+assert "1; return 3;" 3
 
 echo "OK"

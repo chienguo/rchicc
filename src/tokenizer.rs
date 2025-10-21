@@ -12,6 +12,7 @@ pub enum TokenKind {
   Punctuator,
   Num,
   Ident,
+  Keyword,
   Eof,
 }
 
@@ -78,7 +79,13 @@ pub fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
       while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
         i += 1;
       }
-      tokens.push(Token::new(TokenKind::Ident, start, i - start, None));
+      let text = &input[start..i];
+      let kind = if is_keyword(text) {
+        TokenKind::Keyword
+      } else {
+        TokenKind::Ident
+      };
+      tokens.push(Token::new(kind, start, i - start, None));
       continue;
     }
 
@@ -121,4 +128,8 @@ pub fn describe_token(token: Option<&Token>, source: &str) -> String {
     },
     None => "EOF".to_string(),
   }
+}
+
+fn is_keyword(text: &str) -> bool {
+  matches!(text, "return")
 }

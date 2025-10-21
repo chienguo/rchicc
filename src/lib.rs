@@ -3,8 +3,8 @@
 //! The stages are intentionally small and composable so they can be evolved
 //! independently:
 //! - `tokenizer` performs lexical analysis and produces a flat token stream.
-//! - `parser` owns all syntactic knowledge and returns a statement list.
-//! - `codegen` lowers the parsed AST into x86-64 AT&T assembly.
+//! - `parser` owns all syntactic knowledge and returns a function AST with locals.
+//! - `codegen` lowers the parsed function into x86-64 AT&T assembly.
 //! - `error` centralises reporting utilities shared by the other modules.
 
 pub mod error;

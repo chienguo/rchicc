@@ -33,6 +33,9 @@ pub enum AstNode {
   Var {
     obj: usize,
   },
+  Return {
+    value: Box<AstNode>,
+  },
   Neg {
     operand: Box<AstNode>,
   },
@@ -74,6 +77,12 @@ impl AstNode {
     Self::Assign {
       lhs: Box::new(lhs),
       rhs: Box::new(rhs),
+    }
+  }
+
+  pub fn ret(value: AstNode) -> Self {
+    Self::Return {
+      value: Box::new(value),
     }
   }
 }
@@ -208,7 +217,33 @@ fn align_to(n: i64, align: i64) -> i64 {
 }
 
 fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
-  parse_expr_stmt(stream, ctx)
+  if matches!(
+    stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Keyword)
+      .map(|token| token_text(token, stream.source)),
+    Some("return")
+  ) {
+    parse_return_stmt(stream, ctx)
+  } else {
+    parse_expr_stmt(stream, ctx)
+  }
+}
+
+fn parse_return_stmt(
+  stream: &mut TokenStream,
+  ctx: &mut ParserContext,
+) -> CompileResult<Box<Stmt>> {
+  stream.skip("return")?;
+  let expr = parse_expr(stream, ctx)?;
+  stream.skip(";")?;
+  let stmt = AstNode::ret(expr);
+  let next = if stream.is_eof() {
+    None
+  } else {
+    Some(parse_stmt(stream, ctx)?)
+  };
+  Ok(Box::new(Stmt { expr: stmt, next }))
 }
 
 fn parse_expr_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
@@ -469,7 +504,7 @@ impl<'a> TokenStream<'a> {
   /// Consume the current token if it matches the provided punctuator.
   fn equal(&mut self, op: &str) -> bool {
     if let Some(token) = self.peek()
-      && token.kind == TokenKind::Punctuator
+      && matches!(token.kind, TokenKind::Punctuator | TokenKind::Keyword)
       && token.len == op.len()
       && token_text(token, self.source) == op
     {
