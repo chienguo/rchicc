@@ -77,5 +77,14 @@ assert "x=2; return x+4;" 6
 assert "return 2; x = 10;" 2
 assert "return 1; 2; 3;" 1
 assert "1; return 3;" 3
+assert "{ 1; 2; }" 2
+assert "{ x=1; { y=2; x+y; }; }" 3
+assert "{ x=1; { return x; } x=5; }" 1
+assert "{ a=3; return a;}" 3
+assert "{ a=b=3; return a+b; }" 6
+assert "{ foo123=3; bar=5; return foo123+bar; }" 8
+assert "{ 1; 2; return 3;}" 3
+# assert "{ return fo; }" 12
+
 
 echo "OK"

@@ -48,6 +48,9 @@ pub enum AstNode {
     lhs: Box<AstNode>,
     rhs: Box<AstNode>,
   },
+  Block {
+    body: Option<Box<Stmt>>,
+  },
 }
 
 impl AstNode {
@@ -85,6 +88,10 @@ impl AstNode {
       value: Box::new(value),
     }
   }
+
+  pub fn block(body: Option<Box<Stmt>>) -> Self {
+    Self::Block { body }
+  }
 }
 
 /// Singly-linked list of statements. Each node holds exactly one expression
@@ -112,7 +119,7 @@ impl Obj {
 
 #[derive(Debug, Clone)]
 pub struct Function {
-  pub body: Box<Stmt>,
+  pub body: Option<Box<Stmt>>,
   pub locals: Vec<Obj>,
   pub stack_size: i64,
 }
@@ -149,7 +156,11 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Function> {
   }
 
   let mut ctx = ParserContext::new();
-  let body = parse_stmt(&mut stream, &mut ctx)?;
+  let body = if stream.peek_is("{") {
+    parse_block_body(&mut stream, &mut ctx)?
+  } else {
+    parse_stmt_sequence(&mut stream, &mut ctx, None)?
+  };
 
   if !stream.is_eof() {
     let token = stream.current().ok_or_else(|| {
@@ -217,6 +228,17 @@ fn align_to(n: i64, align: i64) -> i64 {
 }
 
 fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  if stream.peek_is("{") {
+    let body = parse_block_body(stream, ctx)?;
+    if stream.peek_is(";") {
+      stream.skip(";")?;
+    }
+    return Ok(Box::new(Stmt {
+      expr: AstNode::block(body),
+      next: None,
+    }));
+  }
+
   if matches!(
     stream
       .peek()
@@ -237,26 +259,62 @@ fn parse_return_stmt(
   stream.skip("return")?;
   let expr = parse_expr(stream, ctx)?;
   stream.skip(";")?;
-  let stmt = AstNode::ret(expr);
-  let next = if stream.is_eof() {
-    None
-  } else {
-    Some(parse_stmt(stream, ctx)?)
-  };
-  Ok(Box::new(Stmt { expr: stmt, next }))
+  Ok(Box::new(Stmt {
+    expr: AstNode::ret(expr),
+    next: None,
+  }))
+}
+
+fn parse_stmt_sequence(
+  stream: &mut TokenStream,
+  ctx: &mut ParserContext,
+  terminator: Option<&str>,
+) -> CompileResult<Option<Box<Stmt>>> {
+  let mut head: Option<Box<Stmt>> = None;
+  let mut tail = &mut head;
+
+  loop {
+    if let Some(term) = terminator {
+      if stream.peek_is(term) {
+        stream.skip(term)?;
+        break;
+      }
+      if stream.is_eof() {
+        return Err(CompileError::at(
+          stream.source,
+          stream.source.len(),
+          format!("expected '{term}'"),
+        ));
+      }
+    } else if stream.is_eof() {
+      break;
+    }
+
+    if stream.is_eof() {
+      break;
+    }
+
+    let stmt = parse_stmt(stream, ctx)?;
+    *tail = Some(stmt);
+    tail = &mut tail.as_mut().unwrap().next;
+  }
+
+  Ok(head)
+}
+
+fn parse_block_body(
+  stream: &mut TokenStream,
+  ctx: &mut ParserContext,
+) -> CompileResult<Option<Box<Stmt>>> {
+  stream.skip("{")?;
+  parse_stmt_sequence(stream, ctx, Some("}"))
 }
 
 fn parse_expr_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
   let expr = parse_expr(stream, ctx)?;
   stream.skip(";")?;
 
-  let next = if stream.is_eof() {
-    None
-  } else {
-    Some(parse_stmt(stream, ctx)?)
-  };
-
-  Ok(Box::new(Stmt { expr, next }))
+  Ok(Box::new(Stmt { expr, next: None }))
 }
 
 fn parse_expr(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
@@ -424,17 +482,18 @@ fn parse_primary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRe
     let node = parse_expr(stream, ctx)?;
     stream.skip(")")?;
     Ok(node)
+  } else if stream.peek_is("{") {
+    let body = parse_block_body(stream, ctx)?;
+    Ok(AstNode::block(body))
+  } else if matches!(
+    stream.peek().map(|token| token.kind),
+    Some(TokenKind::Ident)
+  ) {
+    let (name, loc) = stream.get_ident()?;
+    validate_ident(&name, stream.source, loc)?;
+    let index = ctx.get_or_create_local(&name);
+    Ok(AstNode::var(index))
   } else {
-    if matches!(
-      stream.peek().map(|token| token.kind),
-      Some(TokenKind::Ident)
-    ) {
-      let (name, loc) = stream.get_ident()?;
-      validate_ident(&name, stream.source, loc)?;
-      let index = ctx.get_or_create_local(&name);
-      return Ok(AstNode::var(index));
-    }
-
     let (value, _) = stream.get_number()?;
     Ok(AstNode::number(value))
   }
@@ -499,6 +558,16 @@ impl<'a> TokenStream<'a> {
       .get(self.pos)
       .map(|token| token.loc)
       .unwrap_or(self.source.len())
+  }
+
+  fn peek_is(&self, symbol: &str) -> bool {
+    self
+      .peek()
+      .filter(|token| {
+        matches!(token.kind, TokenKind::Punctuator | TokenKind::Keyword)
+          && token_text(token, self.source) == symbol
+      })
+      .is_some()
   }
 
   /// Consume the current token if it matches the provided punctuator.

@@ -18,7 +18,7 @@ pub fn generate(func: &Function) -> String {
     asm.push_str(&format!("    sub ${}, %rsp\n", func.stack_size));
   }
 
-  emit_stmt(&func.body, func, &mut asm);
+  emit_stmt_list(func.body.as_deref(), func, &mut asm, true);
 
   asm.push_str("    pop %rax\n");
   asm.push_str(".L.return:\n");
@@ -29,18 +29,29 @@ pub fn generate(func: &Function) -> String {
   asm
 }
 
-/// Walk the statement list, emitting code for each expression and discarding
-/// intermediate results to keep stack balance intact.
-fn emit_stmt(stmt: &Stmt, func: &Function, asm: &mut String) {
-  let is_return = matches!(stmt.expr, AstNode::Return { .. });
-  emit_expr(&stmt.expr, func, asm);
-
-  if !is_return && stmt.next.is_some() {
-    asm.push_str("    pop %rax\n");
+/// Walk a statement list, optionally keeping the final value on the stack.
+fn emit_stmt_list(mut current: Option<&Stmt>, func: &Function, asm: &mut String, keep_final: bool) {
+  if current.is_none() {
+    if keep_final {
+      asm.push_str("    mov $0, %rax\n");
+      asm.push_str("    push %rax\n");
+    }
+    return;
   }
 
-  if let Some(next) = stmt.next.as_deref() {
-    emit_stmt(next, func, asm);
+  while let Some(stmt) = current {
+    let is_return = matches!(stmt.expr, AstNode::Return { .. });
+    let next = stmt.next.as_deref();
+    emit_expr(&stmt.expr, func, asm);
+
+    if is_return {
+      return;
+    }
+
+    current = next;
+    if current.is_some() || !keep_final {
+      asm.push_str("    pop %rax\n");
+    }
   }
 }
 
@@ -109,6 +120,9 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String) {
       asm.push_str("    pop %rax\n");
       asm.push_str("    mov %rdi, (%rax)\n");
       asm.push_str("    push %rdi\n");
+    }
+    AstNode::Block { body } => {
+      emit_stmt_list(body.as_deref(), func, asm, true);
     }
     AstNode::Return { value } => {
       emit_expr(value, func, asm);
