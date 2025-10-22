@@ -261,47 +261,21 @@ fn align_to(n: i64, align: i64) -> i64 {
 }
 
 fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
-  if matches!(
-    stream
-      .peek()
-      .filter(|token| token.kind == TokenKind::Keyword)
-      .map(|token| token_text(token, stream.source)),
-    Some("if")
-  ) {
-    return parse_if_stmt(stream, ctx);
-  }
-
-  if matches!(
-    stream
-      .peek()
-      .filter(|token| token.kind == TokenKind::Keyword)
-      .map(|token| token_text(token, stream.source)),
-    Some("for")
-  ) {
-    return parse_for_stmt(stream, ctx);
-  }
-
-  if stream.peek_is("{") {
-    let body = parse_block_body(stream, ctx)?;
-    if stream.peek_is(";") {
-      stream.skip(";")?;
+  match stream.peek_keyword() {
+    Some("if") => parse_if_stmt(stream, ctx),
+    Some("for") => parse_for_stmt(stream, ctx),
+    Some("return") => parse_return_stmt(stream, ctx),
+    _ if stream.peek_is("{") => {
+      let body = parse_block_body(stream, ctx)?;
+      if stream.peek_is(";") {
+        stream.skip(";")?;
+      }
+      Ok(Box::new(Stmt {
+        expr: AstNode::block(body),
+        next: None,
+      }))
     }
-    return Ok(Box::new(Stmt {
-      expr: AstNode::block(body),
-      next: None,
-    }));
-  }
-
-  if matches!(
-    stream
-      .peek()
-      .filter(|token| token.kind == TokenKind::Keyword)
-      .map(|token| token_text(token, stream.source)),
-    Some("return")
-  ) {
-    parse_return_stmt(stream, ctx)
-  } else {
-    parse_expr_stmt(stream, ctx)
+    _ => parse_expr_stmt(stream, ctx),
   }
 }
 
@@ -688,6 +662,16 @@ impl<'a> TokenStream<'a> {
           && token_text(token, self.source) == symbol
       })
       .is_some()
+  }
+
+  fn peek_keyword(&self) -> Option<&str> {
+    self.peek().and_then(|token| {
+      if token.kind == TokenKind::Keyword {
+        Some(token_text(token, self.source))
+      } else {
+        None
+      }
+    })
   }
 
   /// Consume the current token if it matches the provided punctuator.
