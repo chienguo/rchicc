@@ -56,6 +56,12 @@ pub enum AstNode {
     then_branch: Box<Stmt>,
     else_branch: Option<Box<Stmt>>,
   },
+  For {
+    init: Option<Box<AstNode>>,
+    cond: Option<Box<AstNode>>,
+    inc: Option<Box<AstNode>>,
+    body: Box<Stmt>,
+  },
 }
 
 impl AstNode {
@@ -103,6 +109,20 @@ impl AstNode {
       cond: Box::new(cond),
       then_branch,
       else_branch,
+    }
+  }
+
+  pub fn for_stmt(
+    init: Option<AstNode>,
+    cond: Option<AstNode>,
+    inc: Option<AstNode>,
+    body: Box<Stmt>,
+  ) -> Self {
+    Self::For {
+      init: init.map(Box::new),
+      cond: cond.map(Box::new),
+      inc: inc.map(Box::new),
+      body,
     }
   }
 }
@@ -251,6 +271,16 @@ fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResul
     return parse_if_stmt(stream, ctx);
   }
 
+  if matches!(
+    stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Keyword)
+      .map(|token| token_text(token, stream.source)),
+    Some("for")
+  ) {
+    return parse_for_stmt(stream, ctx);
+  }
+
   if stream.peek_is("{") {
     let body = parse_block_body(stream, ctx)?;
     if stream.peek_is(";") {
@@ -309,6 +339,42 @@ fn parse_if_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRe
 
   Ok(Box::new(Stmt {
     expr: AstNode::if_stmt(cond, then_branch, else_branch),
+    next: None,
+  }))
+}
+
+fn parse_for_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  stream.skip("for")?;
+  stream.skip("(")?;
+
+  let init = if stream.equal(";") {
+    None
+  } else {
+    let init_expr = parse_expr(stream, ctx)?;
+    stream.skip(";")?;
+    Some(init_expr)
+  };
+
+  let cond = if stream.equal(";") {
+    None
+  } else {
+    let cond_expr = parse_expr(stream, ctx)?;
+    stream.skip(";")?;
+    Some(cond_expr)
+  };
+
+  let inc = if stream.equal(")") {
+    None
+  } else {
+    let inc_expr = parse_expr(stream, ctx)?;
+    stream.skip(")")?;
+    Some(inc_expr)
+  };
+
+  let body = parse_stmt(stream, ctx)?;
+
+  Ok(Box::new(Stmt {
+    expr: AstNode::for_stmt(init, cond, inc, body),
     next: None,
   }))
 }

@@ -179,6 +179,40 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
 
       asm.push_str(&format!(".L.end.{end_label}:\n"));
     }
+    AstNode::For {
+      init,
+      cond,
+      inc,
+      body,
+    } => {
+      if let Some(init) = init {
+        emit_expr(init, func, asm, cg);
+        asm.push_str("    pop %rax\n");
+      }
+
+      let begin_label = cg.new_label();
+      let end_label = cg.new_label();
+      let cont_label = cg.new_label();
+
+      asm.push_str(&format!(".L.begin.{begin_label}:\n"));
+      if let Some(cond) = cond {
+        emit_expr(cond, func, asm, cg);
+        asm.push_str("    pop %rax\n");
+        asm.push_str("    cmp $0, %rax\n");
+        asm.push_str(&format!("    je .L.end.{end_label}\n"));
+      }
+
+      emit_stmt_list(Some(body.as_ref()), func, asm, false, cg);
+      asm.push_str(&format!(".L.continue.{cont_label}:\n"));
+
+      if let Some(inc) = inc {
+        emit_expr(inc, func, asm, cg);
+        asm.push_str("    pop %rax\n");
+      }
+
+      asm.push_str(&format!("    jmp .L.begin.{begin_label}\n"));
+      asm.push_str(&format!(".L.end.{end_label}:\n"));
+    }
     AstNode::Neg { operand } => {
       emit_expr(operand, func, asm, cg);
       asm.push_str("    pop %rax\n");

@@ -94,6 +94,11 @@ assert "{ if (1) { 1; 2; return 3; } else { return 4;} }" 3
 assert "{ if (0) { 1; 2; return 3; } else { return 4;} }" 4
 assert "{ if (1-1) return 2; return 3; }" 3
 assert "{ if (2-1) return 2; return 3; }" 2
+assert "for (i=0; i<3; i=i+1) ; return i;" 3
+assert "sum=0; for (i=0; i<=3; i=i+1) sum=sum+i; return sum;" 6
+assert "for (;0;) return 1; return 2;" 2
+assert "{ i = 0; j = 0; for (i=0; i<=10; i=i+1) j=i+j; return j;}" 55
+assert "{ for (;;) {return 3;} return 5;}" 3
 
 
 echo "OK"
