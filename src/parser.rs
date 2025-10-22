@@ -125,6 +125,10 @@ impl AstNode {
       body,
     }
   }
+
+  pub fn while_stmt(cond: AstNode, body: Box<Stmt>) -> Self {
+    Self::for_stmt(None, Some(cond), None, body)
+  }
 }
 
 /// Singly-linked list of statements. Each node holds exactly one expression
@@ -264,7 +268,13 @@ fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResul
   match stream.peek_keyword() {
     Some("if") => parse_if_stmt(stream, ctx),
     Some("for") => parse_for_stmt(stream, ctx),
+    Some("while") => parse_while_stmt(stream, ctx),
     Some("return") => parse_return_stmt(stream, ctx),
+    Some("else") => Err(CompileError::at(
+      stream.source,
+      stream.current_loc(),
+      "unexpected 'else' without a matching 'if'",
+    )),
     _ if stream.peek_is("{") => {
       let body = parse_block_body(stream, ctx)?;
       if stream.peek_is(";") {
@@ -349,6 +359,19 @@ fn parse_for_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileR
 
   Ok(Box::new(Stmt {
     expr: AstNode::for_stmt(init, cond, inc, body),
+    next: None,
+  }))
+}
+
+fn parse_while_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  stream.skip("while")?;
+  stream.skip("(")?;
+  let cond = parse_expr(stream, ctx)?;
+  stream.skip(")")?;
+  let body = parse_stmt(stream, ctx)?;
+
+  Ok(Box::new(Stmt {
+    expr: AstNode::while_stmt(cond, body),
     next: None,
   }))
 }
