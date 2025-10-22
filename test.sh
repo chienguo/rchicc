@@ -86,6 +86,14 @@ assert "{ foo123=3; bar=5; return foo123+bar; }" 8
 assert "{ 1; 2; return 3;}" 3
 assert "{ ; ; return 3;}" 3
 # assert "{ return fo; }" 12
+assert "if (1) return 5; return 3;" 5
+assert "if (0) return 5; return 3;" 3
+assert "if (1) { return 7; } else { return 9; }" 7
+assert "{ x=0; if (x) y=1; else y=2; y; }" 2
+assert "{ if (1) { 1; 2; return 3; } else { return 4;} }" 3
+assert "{ if (0) { 1; 2; return 3; } else { return 4;} }" 4
+assert "{ if (1-1) return 2; return 3; }" 3
+assert "{ if (2-1) return 2; return 3; }" 2
 
 
 echo "OK"

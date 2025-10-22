@@ -51,6 +51,11 @@ pub enum AstNode {
   Block {
     body: Option<Box<Stmt>>,
   },
+  If {
+    cond: Box<AstNode>,
+    then_branch: Box<Stmt>,
+    else_branch: Option<Box<Stmt>>,
+  },
 }
 
 impl AstNode {
@@ -91,6 +96,14 @@ impl AstNode {
 
   pub fn block(body: Option<Box<Stmt>>) -> Self {
     Self::Block { body }
+  }
+
+  pub fn if_stmt(cond: AstNode, then_branch: Box<Stmt>, else_branch: Option<Box<Stmt>>) -> Self {
+    Self::If {
+      cond: Box::new(cond),
+      then_branch,
+      else_branch,
+    }
   }
 }
 
@@ -228,6 +241,16 @@ fn align_to(n: i64, align: i64) -> i64 {
 }
 
 fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  if matches!(
+    stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Keyword)
+      .map(|token| token_text(token, stream.source)),
+    Some("if")
+  ) {
+    return parse_if_stmt(stream, ctx);
+  }
+
   if stream.peek_is("{") {
     let body = parse_block_body(stream, ctx)?;
     if stream.peek_is(";") {
@@ -261,6 +284,31 @@ fn parse_return_stmt(
   stream.skip(";")?;
   Ok(Box::new(Stmt {
     expr: AstNode::ret(expr),
+    next: None,
+  }))
+}
+
+fn parse_if_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  stream.skip("if")?;
+  stream.skip("(")?;
+  let cond = parse_expr(stream, ctx)?;
+  stream.skip(")")?;
+  let then_branch = parse_stmt(stream, ctx)?;
+  let else_branch = if matches!(
+    stream
+      .peek()
+      .filter(|token| token.kind == TokenKind::Keyword)
+      .map(|token| token_text(token, stream.source)),
+    Some("else")
+  ) {
+    stream.skip("else")?;
+    Some(parse_stmt(stream, ctx)?)
+  } else {
+    None
+  };
+
+  Ok(Box::new(Stmt {
+    expr: AstNode::if_stmt(cond, then_branch, else_branch),
     next: None,
   }))
 }

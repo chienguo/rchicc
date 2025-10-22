@@ -1,11 +1,26 @@
 //! Code generation: lower the parsed AST into AT&T x86-64 assembly.
 //!
-//! The emitter currently uses a simple stack machine: every expression leaves
-//! a single value on the stack and statements pop intermediate results as we
-//! chain them. Locals live on the stack frame and are addressed relative to
-//! `%rbp`.
+//! Expressions use a simple stack machine: each node pushes exactly one value.
+//! Statements consume their results unless explicitly requested (e.g. block
+//! expressions). Locals are addressed relative to `%rbp`.
 
 use crate::parser::{AstNode, BinaryOp, Function, Stmt};
+
+struct Codegen {
+  next_label: usize,
+}
+
+impl Codegen {
+  fn new() -> Self {
+    Self { next_label: 0 }
+  }
+
+  fn new_label(&mut self) -> usize {
+    let id = self.next_label;
+    self.next_label += 1;
+    id
+  }
+}
 
 /// Emit assembly for a function.
 pub fn generate(func: &Function) -> String {
@@ -18,7 +33,8 @@ pub fn generate(func: &Function) -> String {
     asm.push_str(&format!("    sub ${}, %rsp\n", func.stack_size));
   }
 
-  emit_stmt_list(func.body.as_deref(), func, &mut asm, true);
+  let mut cg = Codegen::new();
+  emit_stmt_list(func.body.as_deref(), func, &mut asm, true, &mut cg);
 
   asm.push_str("    pop %rax\n");
   asm.push_str(".L.return:\n");
@@ -29,8 +45,14 @@ pub fn generate(func: &Function) -> String {
   asm
 }
 
-/// Walk a statement list, optionally keeping the final value on the stack.
-fn emit_stmt_list(mut current: Option<&Stmt>, func: &Function, asm: &mut String, keep_final: bool) {
+/// Emit a statement list, optionally keeping the final value on the stack.
+fn emit_stmt_list(
+  mut current: Option<&Stmt>,
+  func: &Function,
+  asm: &mut String,
+  keep_final: bool,
+  cg: &mut Codegen,
+) {
   if current.is_none() {
     if keep_final {
       asm.push_str("    mov $0, %rax\n");
@@ -42,7 +64,7 @@ fn emit_stmt_list(mut current: Option<&Stmt>, func: &Function, asm: &mut String,
   while let Some(stmt) = current {
     let is_return = matches!(stmt.expr, AstNode::Return { .. });
     let next = stmt.next.as_deref();
-    emit_expr(&stmt.expr, func, asm);
+    emit_expr(&stmt.expr, func, asm, cg);
 
     if is_return {
       return;
@@ -56,7 +78,7 @@ fn emit_stmt_list(mut current: Option<&Stmt>, func: &Function, asm: &mut String,
 }
 
 /// Emit stack-based code for a single expression node.
-fn emit_expr(node: &AstNode, func: &Function, asm: &mut String) {
+fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen) {
   match node {
     AstNode::Num { value } => {
       asm.push_str(&format!("    mov ${value}, %rax\n"));
@@ -68,8 +90,8 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String) {
       asm.push_str("    push %rax\n");
     }
     AstNode::Binary { op, lhs, rhs } => {
-      emit_expr(lhs, func, asm);
-      emit_expr(rhs, func, asm);
+      emit_expr(lhs, func, asm, cg);
+      emit_expr(rhs, func, asm, cg);
       asm.push_str("    pop %rdi\n");
       asm.push_str("    pop %rax\n");
       match op {
@@ -115,22 +137,50 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String) {
     }
     AstNode::Assign { lhs, rhs } => {
       emit_addr(lhs, func, asm);
-      emit_expr(rhs, func, asm);
+      emit_expr(rhs, func, asm, cg);
       asm.push_str("    pop %rdi\n");
       asm.push_str("    pop %rax\n");
       asm.push_str("    mov %rdi, (%rax)\n");
       asm.push_str("    push %rdi\n");
     }
     AstNode::Block { body } => {
-      emit_stmt_list(body.as_deref(), func, asm, true);
+      emit_stmt_list(body.as_deref(), func, asm, true, cg);
     }
     AstNode::Return { value } => {
-      emit_expr(value, func, asm);
+      emit_expr(value, func, asm, cg);
       asm.push_str("    pop %rax\n");
       asm.push_str("    jmp .L.return\n");
     }
+    AstNode::If {
+      cond,
+      then_branch,
+      else_branch,
+    } => {
+      emit_expr(cond, func, asm, cg);
+      asm.push_str("    pop %rax\n");
+      asm.push_str("    cmp $0, %rax\n");
+
+      let else_label = else_branch.as_ref().map(|_| cg.new_label());
+      let end_label = cg.new_label();
+      match else_label {
+        Some(label) => asm.push_str(&format!("    je .L.else.{label}\n")),
+        None => asm.push_str(&format!("    je .L.end.{end_label}\n")),
+      }
+
+      emit_stmt_list(Some(then_branch.as_ref()), func, asm, false, cg);
+      if else_branch.is_some() {
+        asm.push_str(&format!("    jmp .L.end.{end_label}\n"));
+      }
+
+      if let Some(label) = else_label {
+        asm.push_str(&format!(".L.else.{label}:\n"));
+        emit_stmt_list(else_branch.as_deref(), func, asm, false, cg);
+      }
+
+      asm.push_str(&format!(".L.end.{end_label}:\n"));
+    }
     AstNode::Neg { operand } => {
-      emit_expr(operand, func, asm);
+      emit_expr(operand, func, asm, cg);
       asm.push_str("    pop %rax\n");
       asm.push_str("    neg %rax\n");
       asm.push_str("    push %rax\n");
