@@ -266,6 +266,10 @@ impl<'a> Iterator for StmtIter<'a> {
 }
 
 /// Parse a sequence of statements from the token stream.
+// Parse procedure overview:
+// - `parse` initialises the token stream/context and hands off to `parse_stmt_sequence`.
+// - `parse_stmt_sequence` consumes zero or more declarations/statements until the terminator.
+// - Expressions descend via `parse_assign` -> ... -> `parse_primary`, mirroring C precedence.
 pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Function> {
   let mut stream = TokenStream::new(tokens, source);
 
@@ -307,6 +311,57 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Function> {
     locals: ctx.locals,
     stack_size,
   })
+}
+
+// ----- Statement parsing -----
+fn parse_stmt_sequence(
+  stream: &mut TokenStream,
+  ctx: &mut ParserContext,
+  terminator: Option<&str>,
+) -> CompileResult<Option<Box<Stmt>>> {
+  let mut head: Option<Box<Stmt>> = None;
+  let mut tail = &mut head;
+
+  loop {
+    if let Some(term) = terminator {
+      if stream.peek_is(term) {
+        stream.skip(term)?;
+        break;
+      }
+      if stream.is_eof() {
+        return Err(CompileError::at(
+          stream.source,
+          stream.source.len(),
+          format!("expected '{term}'"),
+        ));
+      }
+    } else if stream.is_eof() {
+      break;
+    }
+
+    if stream.is_eof() {
+      break;
+    }
+
+    if matches!(stream.peek_keyword(), Some("int")) {
+      tail = parse_declaration_into(stream, ctx, tail)?;
+      continue;
+    }
+
+    let stmt = parse_stmt(stream, ctx)?;
+    *tail = Some(stmt);
+    tail = &mut tail.as_mut().unwrap().next;
+  }
+
+  Ok(head)
+}
+
+fn parse_block_body(
+  stream: &mut TokenStream,
+  ctx: &mut ParserContext,
+) -> CompileResult<Option<Box<Stmt>>> {
+  stream.skip("{")?;
+  parse_stmt_sequence(stream, ctx, Some("}"))
 }
 
 struct ParserContext {
@@ -500,6 +555,18 @@ fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResul
   }
 }
 
+fn parse_expr_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
+  if stream.equal(";") {
+    let mut expr = AstNode::block(None);
+    ctx.annotate_type(&mut expr);
+    return Ok(Box::new(Stmt { expr, next: None }));
+  }
+  let expr = parse_expr(stream, ctx)?;
+  stream.skip(";")?;
+
+  Ok(Box::new(Stmt { expr, next: None }))
+}
+
 fn parse_return_stmt(
   stream: &mut TokenStream,
   ctx: &mut ParserContext,
@@ -587,48 +654,7 @@ fn parse_while_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> Compil
   }))
 }
 
-fn parse_stmt_sequence(
-  stream: &mut TokenStream,
-  ctx: &mut ParserContext,
-  terminator: Option<&str>,
-) -> CompileResult<Option<Box<Stmt>>> {
-  let mut head: Option<Box<Stmt>> = None;
-  let mut tail = &mut head;
-
-  loop {
-    if let Some(term) = terminator {
-      if stream.peek_is(term) {
-        stream.skip(term)?;
-        break;
-      }
-      if stream.is_eof() {
-        return Err(CompileError::at(
-          stream.source,
-          stream.source.len(),
-          format!("expected '{term}'"),
-        ));
-      }
-    } else if stream.is_eof() {
-      break;
-    }
-
-    if stream.is_eof() {
-      break;
-    }
-
-    if matches!(stream.peek_keyword(), Some("int")) {
-      tail = parse_declaration_into(stream, ctx, tail)?;
-      continue;
-    }
-
-    let stmt = parse_stmt(stream, ctx)?;
-    *tail = Some(stmt);
-    tail = &mut tail.as_mut().unwrap().next;
-  }
-
-  Ok(head)
-}
-
+// ----- Declaration helpers -----
 fn parse_declspec(stream: &mut TokenStream) -> CompileResult<Type> {
   if matches!(stream.peek_keyword(), Some("int")) {
     stream.skip("int")?;
@@ -689,26 +715,7 @@ fn parse_declaration_into<'a>(
   Ok(tail)
 }
 
-fn parse_block_body(
-  stream: &mut TokenStream,
-  ctx: &mut ParserContext,
-) -> CompileResult<Option<Box<Stmt>>> {
-  stream.skip("{")?;
-  parse_stmt_sequence(stream, ctx, Some("}"))
-}
-
-fn parse_expr_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
-  if stream.equal(";") {
-    let mut expr = AstNode::block(None);
-    ctx.annotate_type(&mut expr);
-    return Ok(Box::new(Stmt { expr, next: None }));
-  }
-  let expr = parse_expr(stream, ctx)?;
-  stream.skip(";")?;
-
-  Ok(Box::new(Stmt { expr, next: None }))
-}
-
+// ----- Expression parsing -----
 fn parse_expr(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<AstNode> {
   parse_assign(stream, ctx)
 }
