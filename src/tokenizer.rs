@@ -131,5 +131,5 @@ pub fn describe_token(token: Option<&Token>, source: &str) -> String {
 }
 
 fn is_keyword(text: &str) -> bool {
-  matches!(text, "return" | "if" | "else" | "for" | "while")
+  matches!(text, "return" | "if" | "else" | "for" | "while" | "int")
 }

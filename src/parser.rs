@@ -226,11 +226,11 @@ pub struct Obj {
 }
 
 impl Obj {
-  pub fn new(name: impl Into<String>) -> Self {
+  pub fn new(name: impl Into<String>, ty: Type) -> Self {
     Self {
       name: name.into(),
       offset: 0,
-      ty: Type::int(),
+      ty,
     }
   }
 }
@@ -322,20 +322,34 @@ impl ParserContext {
     }
   }
 
-  fn get_or_create_local(&mut self, name: &str) -> usize {
-    if let Some(&index) = self.map.get(name) {
-      return index;
+  fn declare_local(
+    &mut self,
+    name: &str,
+    ty: Type,
+    source: &str,
+    loc: usize,
+  ) -> CompileResult<usize> {
+    if self.map.contains_key(name) {
+      return Err(CompileError::at(
+        source,
+        loc,
+        format!("redeclaration of '{name}'"),
+      ));
     }
     let index = self.locals.len();
-    self.locals.push(Obj::new(name));
+    self.locals.push(Obj::new(name, ty));
     self.map.insert(name.to_string(), index);
-    index
+    Ok(index)
+  }
+
+  fn lookup_local(&self, name: &str) -> Option<usize> {
+    self.map.get(name).copied()
   }
 
   fn assign_offsets(&mut self) -> i64 {
     let mut offset: i64 = 0;
     for obj in self.locals.iter_mut().rev() {
-      offset += 8;
+      offset += obj.ty.size();
       obj.offset = offset;
     }
     align_to(offset, 16)
@@ -602,12 +616,77 @@ fn parse_stmt_sequence(
       break;
     }
 
+    if matches!(stream.peek_keyword(), Some("int")) {
+      tail = parse_declaration_into(stream, ctx, tail)?;
+      continue;
+    }
+
     let stmt = parse_stmt(stream, ctx)?;
     *tail = Some(stmt);
     tail = &mut tail.as_mut().unwrap().next;
   }
 
   Ok(head)
+}
+
+fn parse_declspec(stream: &mut TokenStream) -> CompileResult<Type> {
+  if matches!(stream.peek_keyword(), Some("int")) {
+    stream.skip("int")?;
+    Ok(Type::int())
+  } else {
+    let loc = stream.current_loc();
+    Err(CompileError::at(
+      stream.source,
+      loc,
+      "expected type specifier",
+    ))
+  }
+}
+
+fn parse_declarator(
+  stream: &mut TokenStream,
+  ctx: &mut ParserContext,
+  base_ty: &Type,
+) -> CompileResult<usize> {
+  let mut ty = base_ty.clone();
+  while stream.equal("*") {
+    ty = Type::pointer_to(ty);
+  }
+  let (name, loc) = stream.get_ident()?;
+  validate_ident(&name, stream.source, loc)?;
+  ctx.declare_local(&name, ty, stream.source, loc)
+}
+
+fn parse_declaration_into<'a>(
+  stream: &mut TokenStream,
+  ctx: &mut ParserContext,
+  mut tail: &'a mut Option<Box<Stmt>>,
+) -> CompileResult<&'a mut Option<Box<Stmt>>> {
+  let base_ty = parse_declspec(stream)?;
+
+  loop {
+    let index = parse_declarator(stream, ctx, &base_ty)?;
+    if stream.equal("=") {
+      let init = parse_expr(stream, ctx)?;
+      let mut assign = AstNode::assign(AstNode::var(index), init);
+      ctx.annotate_type(&mut assign);
+      let stmt = Box::new(Stmt {
+        expr: assign,
+        next: None,
+      });
+      *tail = Some(stmt);
+      tail = &mut tail.as_mut().unwrap().next;
+    }
+
+    if stream.equal(",") {
+      continue;
+    }
+
+    break;
+  }
+
+  stream.skip(";")?;
+  Ok(tail)
 }
 
 fn parse_block_body(
@@ -648,14 +727,8 @@ fn parse_assign(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRes
     stream.skip("=")?;
     let mut rhs = parse_assign(stream, ctx)?;
     ctx.annotate_type(&mut rhs);
-    let rhs_ty = rhs.ty().clone();
     return match node {
-      AstNode::Var { obj, .. } => {
-        if let Some(local) = ctx.locals.get_mut(obj) {
-          local.ty = rhs_ty.clone();
-        }
-        Ok(AstNode::assign(node, rhs))
-      }
+      AstNode::Var { .. } => Ok(AstNode::assign(node, rhs)),
       AstNode::Deref { .. } => Ok(AstNode::assign(node, rhs)),
       _ => Err(CompileError::at(
         stream.source,
@@ -821,7 +894,13 @@ fn parse_primary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRe
   ) {
     let (name, loc) = stream.get_ident()?;
     validate_ident(&name, stream.source, loc)?;
-    let index = ctx.get_or_create_local(&name);
+    let index = ctx.lookup_local(&name).ok_or_else(|| {
+      CompileError::at(
+        stream.source,
+        loc,
+        format!("use of undeclared identifier '{name}'"),
+      )
+    })?;
     Ok(AstNode::var(index))
   } else {
     let (value, _) = stream.get_number()?;
