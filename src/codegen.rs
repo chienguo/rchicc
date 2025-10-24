@@ -80,16 +80,16 @@ fn emit_stmt_list(
 /// Emit stack-based code for a single expression node.
 fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen) {
   match node {
-    AstNode::Num { value } => {
+    AstNode::Num { value, .. } => {
       asm.push_str(&format!("    mov ${value}, %rax\n"));
       asm.push_str("    push %rax\n");
     }
-    AstNode::Var { obj } => {
+    AstNode::Var { obj, .. } => {
       let offset = func.locals[*obj].offset;
       asm.push_str(&format!("    mov -{offset}(%rbp), %rax\n"));
       asm.push_str("    push %rax\n");
     }
-    AstNode::Binary { op, lhs, rhs } => {
+    AstNode::Binary { op, lhs, rhs, .. } => {
       emit_expr(lhs, func, asm, cg);
       emit_expr(rhs, func, asm, cg);
       asm.push_str("    pop %rdi\n");
@@ -135,7 +135,7 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       }
       asm.push_str("    push %rax\n");
     }
-    AstNode::Assign { lhs, rhs } => {
+    AstNode::Assign { lhs, rhs, .. } => {
       emit_addr(lhs, func, asm, cg);
       emit_expr(rhs, func, asm, cg);
       asm.push_str("    pop %rdi\n");
@@ -143,19 +143,19 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       asm.push_str("    mov %rdi, (%rax)\n");
       asm.push_str("    push %rdi\n");
     }
-    AstNode::Block { body } => {
+    AstNode::Block { body, .. } => {
       emit_stmt_list(body.as_deref(), func, asm, true, cg);
     }
-    AstNode::Addr { operand } => {
+    AstNode::Addr { operand, .. } => {
       emit_addr(operand, func, asm, cg);
     }
-    AstNode::Deref { operand } => {
+    AstNode::Deref { operand, .. } => {
       emit_expr(operand, func, asm, cg);
       asm.push_str("    pop %rax\n");
       asm.push_str("    mov (%rax), %rax\n");
       asm.push_str("    push %rax\n");
     }
-    AstNode::Return { value } => {
+    AstNode::Return { value, .. } => {
       emit_expr(value, func, asm, cg);
       asm.push_str("    pop %rax\n");
       asm.push_str("    jmp .L.return\n");
@@ -164,6 +164,7 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       cond,
       then_branch,
       else_branch,
+      ..
     } => {
       emit_expr(cond, func, asm, cg);
       asm.push_str("    pop %rax\n");
@@ -193,6 +194,7 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       cond,
       inc,
       body,
+      ..
     } => {
       if let Some(init) = init {
         emit_expr(init, func, asm, cg);
@@ -222,7 +224,7 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       asm.push_str(&format!("    jmp .L.begin.{begin_label}\n"));
       asm.push_str(&format!(".L.end.{end_label}:\n"));
     }
-    AstNode::Neg { operand } => {
+    AstNode::Neg { operand, .. } => {
       emit_expr(operand, func, asm, cg);
       asm.push_str("    pop %rax\n");
       asm.push_str("    neg %rax\n");
@@ -233,12 +235,12 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
 
 fn emit_addr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen) {
   match node {
-    AstNode::Var { obj } => {
+    AstNode::Var { obj, .. } => {
       let offset = func.locals[*obj].offset;
       asm.push_str(&format!("    lea -{offset}(%rbp), %rax\n"));
       asm.push_str("    push %rax\n");
     }
-    AstNode::Deref { operand } => {
+    AstNode::Deref { operand, .. } => {
       emit_expr(operand, func, asm, cg);
     }
     _ => panic!("not an lvalue"),

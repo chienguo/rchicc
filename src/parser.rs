@@ -7,7 +7,7 @@
 
 use crate::error::{CompileError, CompileResult};
 use crate::tokenizer::{Token, TokenKind, describe_token, token_text};
-use crate::ty::TypeKind;
+use crate::ty::Type;
 use std::collections::HashMap;
 
 /// Binary operators recognised by the language.
@@ -30,71 +30,91 @@ pub enum BinaryOp {
 pub enum AstNode {
   Num {
     value: i64,
+    ty: Type,
   },
   Var {
     obj: usize,
+    ty: Type,
   },
   Return {
     value: Box<AstNode>,
+    ty: Type,
   },
   Neg {
     operand: Box<AstNode>,
+    ty: Type,
   },
   Addr {
     operand: Box<AstNode>,
+    ty: Type,
   },
   Deref {
     operand: Box<AstNode>,
+    ty: Type,
   },
   Binary {
     op: BinaryOp,
     lhs: Box<AstNode>,
     rhs: Box<AstNode>,
+    ty: Type,
   },
   Assign {
     lhs: Box<AstNode>,
     rhs: Box<AstNode>,
+    ty: Type,
   },
   Block {
     body: Option<Box<Stmt>>,
+    ty: Type,
   },
   If {
     cond: Box<AstNode>,
     then_branch: Box<Stmt>,
     else_branch: Option<Box<Stmt>>,
+    ty: Type,
   },
   For {
     init: Option<Box<AstNode>>,
     cond: Option<Box<AstNode>>,
     inc: Option<Box<AstNode>>,
     body: Box<Stmt>,
+    ty: Type,
   },
 }
 
 impl AstNode {
   pub fn number(value: i64) -> Self {
-    Self::Num { value }
+    Self::Num {
+      value,
+      ty: Type::int(),
+    }
   }
 
   pub fn var(obj: usize) -> Self {
-    Self::Var { obj }
+    Self::Var {
+      obj,
+      ty: Type::int(),
+    }
   }
 
   pub fn unary_neg(operand: AstNode) -> Self {
     Self::Neg {
       operand: Box::new(operand),
+      ty: Type::int(),
     }
   }
 
   pub fn addr(operand: AstNode) -> Self {
     Self::Addr {
       operand: Box::new(operand),
+      ty: Type::pointer_to(Type::int()),
     }
   }
 
   pub fn deref(operand: AstNode) -> Self {
     Self::Deref {
       operand: Box::new(operand),
+      ty: Type::int(),
     }
   }
 
@@ -103,6 +123,7 @@ impl AstNode {
       op,
       lhs: Box::new(lhs),
       rhs: Box::new(rhs),
+      ty: Type::int(),
     }
   }
 
@@ -110,17 +131,22 @@ impl AstNode {
     Self::Assign {
       lhs: Box::new(lhs),
       rhs: Box::new(rhs),
+      ty: Type::int(),
     }
   }
 
   pub fn ret(value: AstNode) -> Self {
     Self::Return {
       value: Box::new(value),
+      ty: Type::int(),
     }
   }
 
   pub fn block(body: Option<Box<Stmt>>) -> Self {
-    Self::Block { body }
+    Self::Block {
+      body,
+      ty: Type::int(),
+    }
   }
 
   pub fn if_stmt(cond: AstNode, then_branch: Box<Stmt>, else_branch: Option<Box<Stmt>>) -> Self {
@@ -128,6 +154,7 @@ impl AstNode {
       cond: Box::new(cond),
       then_branch,
       else_branch,
+      ty: Type::int(),
     }
   }
 
@@ -142,11 +169,44 @@ impl AstNode {
       cond: cond.map(Box::new),
       inc: inc.map(Box::new),
       body,
+      ty: Type::int(),
     }
   }
 
   pub fn while_stmt(cond: AstNode, body: Box<Stmt>) -> Self {
     Self::for_stmt(None, Some(cond), None, body)
+  }
+
+  pub fn ty(&self) -> &Type {
+    match self {
+      AstNode::Num { ty, .. }
+      | AstNode::Var { ty, .. }
+      | AstNode::Return { ty, .. }
+      | AstNode::Neg { ty, .. }
+      | AstNode::Addr { ty, .. }
+      | AstNode::Deref { ty, .. }
+      | AstNode::Binary { ty, .. }
+      | AstNode::Assign { ty, .. }
+      | AstNode::Block { ty, .. }
+      | AstNode::If { ty, .. }
+      | AstNode::For { ty, .. } => ty,
+    }
+  }
+
+  pub fn ty_mut(&mut self) -> &mut Type {
+    match self {
+      AstNode::Num { ty, .. }
+      | AstNode::Var { ty, .. }
+      | AstNode::Return { ty, .. }
+      | AstNode::Neg { ty, .. }
+      | AstNode::Addr { ty, .. }
+      | AstNode::Deref { ty, .. }
+      | AstNode::Binary { ty, .. }
+      | AstNode::Assign { ty, .. }
+      | AstNode::Block { ty, .. }
+      | AstNode::If { ty, .. }
+      | AstNode::For { ty, .. } => ty,
+    }
   }
 }
 
@@ -162,7 +222,7 @@ pub struct Stmt {
 pub struct Obj {
   pub name: String,
   pub offset: i64,
-  pub ty: TypeKind,
+  pub ty: Type,
 }
 
 impl Obj {
@@ -170,7 +230,7 @@ impl Obj {
     Self {
       name: name.into(),
       offset: 0,
-      ty: TypeKind::Int,
+      ty: Type::int(),
     }
   }
 }
@@ -214,7 +274,7 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Function> {
   }
 
   let mut ctx = ParserContext::new();
-  let body = if stream.peek_is("{") {
+  let mut body = if stream.peek_is("{") {
     parse_block_body(&mut stream, &mut ctx)?
   } else {
     parse_stmt_sequence(&mut stream, &mut ctx, None)?
@@ -234,6 +294,10 @@ pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Function> {
       token.loc,
       format!("unexpected token \"{got}\""),
     ));
+  }
+
+  if let Some(stmt) = body.as_deref_mut() {
+    ctx.annotate_stmt_list(Some(stmt));
   }
 
   let stack_size = ctx.assign_offsets();
@@ -277,49 +341,112 @@ impl ParserContext {
     align_to(offset, 16)
   }
 
-  fn node_type(&self, node: &AstNode) -> TypeKind {
+  fn annotate_type(&self, node: &mut AstNode) {
     match node {
-      AstNode::Num { .. } => TypeKind::Int,
-      AstNode::Var { obj } => self.locals.get(*obj).map(|o| o.ty).unwrap_or(TypeKind::Int),
-      AstNode::Neg { operand } => {
-        let _ = self.node_type(operand);
-        TypeKind::Int
+      AstNode::Num { ty, .. } => {
+        *ty = Type::int();
       }
-      AstNode::Addr { .. } => TypeKind::Ptr,
-      AstNode::Deref { operand } => {
-        let _ = self.node_type(operand);
-        TypeKind::Int
+      AstNode::Var { obj, ty, .. } => {
+        let t = self
+          .locals
+          .get(*obj)
+          .map(|o| o.ty.clone())
+          .unwrap_or_else(Type::int);
+        *ty = t;
       }
-      AstNode::Binary { op, lhs, rhs } => {
-        let lhs_ty = self.node_type(lhs);
-        let rhs_ty = self.node_type(rhs);
-        match op {
-          BinaryOp::Add | BinaryOp::Sub => {
-            if (lhs_ty == TypeKind::Ptr && rhs_ty == TypeKind::Int)
-              || (lhs_ty == TypeKind::Int && rhs_ty == TypeKind::Ptr)
-            {
-              TypeKind::Ptr
+      AstNode::Neg { operand, ty } => {
+        self.annotate_type(operand);
+        *ty = Type::int();
+      }
+      AstNode::Addr { operand, ty } => {
+        self.annotate_type(operand);
+        *ty = Type::pointer_to(operand.ty().clone());
+      }
+      AstNode::Deref { operand, ty } => {
+        self.annotate_type(operand);
+        *ty = operand.ty().base().cloned().unwrap_or_else(Type::int);
+      }
+      AstNode::Binary { op, lhs, rhs, ty } => {
+        self.annotate_type(lhs);
+        self.annotate_type(rhs);
+        *ty = match op {
+          BinaryOp::Add => {
+            if lhs.ty().is_pointer() && rhs.ty().is_integer() {
+              lhs.ty().clone()
+            } else if lhs.ty().is_integer() && rhs.ty().is_pointer() {
+              rhs.ty().clone()
             } else {
-              TypeKind::Int
+              Type::int()
             }
           }
-          BinaryOp::Mul | BinaryOp::Div => TypeKind::Int,
-          _ => TypeKind::Int,
-        }
+          BinaryOp::Sub => {
+            if lhs.ty().is_pointer() && rhs.ty().is_integer() {
+              lhs.ty().clone()
+            } else {
+              Type::int()
+            }
+          }
+          BinaryOp::Mul | BinaryOp::Div => Type::int(),
+          _ => Type::int(),
+        };
       }
-      AstNode::Assign { rhs, .. } => self.node_type(rhs),
-      AstNode::Block { body } => self.stmt_list_type(body.as_deref()),
-      AstNode::Return { value } => self.node_type(value),
-      AstNode::If { .. } => TypeKind::Int,
-      AstNode::For { .. } => TypeKind::Int,
+      AstNode::Assign { lhs, rhs, ty } => {
+        self.annotate_type(lhs);
+        self.annotate_type(rhs);
+        *ty = if lhs.ty().is_pointer() {
+          lhs.ty().clone()
+        } else {
+          rhs.ty().clone()
+        };
+      }
+      AstNode::Block { body, ty } => {
+        *ty = self.annotate_stmt_list(body.as_deref_mut());
+      }
+      AstNode::Return { value, ty } => {
+        self.annotate_type(value);
+        *ty = value.ty().clone();
+      }
+      AstNode::If {
+        cond,
+        then_branch,
+        else_branch,
+        ty,
+      } => {
+        self.annotate_type(cond);
+        self.annotate_stmt_list(Some(then_branch.as_mut()));
+        if let Some(else_branch) = else_branch.as_mut() {
+          self.annotate_stmt_list(Some(else_branch.as_mut()));
+        }
+        *ty = Type::int();
+      }
+      AstNode::For {
+        init,
+        cond,
+        inc,
+        body,
+        ty,
+      } => {
+        if let Some(init) = init.as_mut() {
+          self.annotate_type(init);
+        }
+        if let Some(cond) = cond.as_mut() {
+          self.annotate_type(cond);
+        }
+        if let Some(inc) = inc.as_mut() {
+          self.annotate_type(inc);
+        }
+        self.annotate_stmt_list(Some(body.as_mut()));
+        *ty = Type::int();
+      }
     }
   }
 
-  fn stmt_list_type(&self, mut stmt: Option<&Stmt>) -> TypeKind {
-    let mut ty = TypeKind::Int;
+  fn annotate_stmt_list(&self, mut stmt: Option<&mut Stmt>) -> Type {
+    let mut ty = Type::int();
     while let Some(s) = stmt {
-      ty = self.node_type(&s.expr);
-      stmt = s.next.as_deref();
+      self.annotate_type(&mut s.expr);
+      ty = s.expr.ty().clone();
+      stmt = s.next.as_deref_mut();
     }
     ty
   }
@@ -493,10 +620,9 @@ fn parse_block_body(
 
 fn parse_expr_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
   if stream.equal(";") {
-    return Ok(Box::new(Stmt {
-      expr: AstNode::Block { body: None },
-      next: None,
-    }));
+    let mut expr = AstNode::block(None);
+    ctx.annotate_type(&mut expr);
+    return Ok(Box::new(Stmt { expr, next: None }));
   }
   let expr = parse_expr(stream, ctx)?;
   stream.skip(";")?;
@@ -520,12 +646,13 @@ fn parse_assign(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRes
   ) {
     let assign_loc = stream.current_loc();
     stream.skip("=")?;
-    let rhs = parse_assign(stream, ctx)?;
+    let mut rhs = parse_assign(stream, ctx)?;
+    ctx.annotate_type(&mut rhs);
+    let rhs_ty = rhs.ty().clone();
     return match node {
-      AstNode::Var { obj } => {
-        let ty = ctx.node_type(&rhs);
+      AstNode::Var { obj, .. } => {
         if let Some(local) = ctx.locals.get_mut(obj) {
-          local.ty = ty;
+          local.ty = rhs_ty.clone();
         }
         Ok(AstNode::assign(node, rhs))
       }
@@ -704,60 +831,74 @@ fn parse_primary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRe
 
 fn build_add(
   ctx: &ParserContext,
-  lhs: AstNode,
-  rhs: AstNode,
+  mut lhs: AstNode,
+  mut rhs: AstNode,
   source: &str,
   loc: usize,
 ) -> CompileResult<AstNode> {
-  let lhs_ty = ctx.node_type(&lhs);
-  let rhs_ty = ctx.node_type(&rhs);
-  match (lhs_ty, rhs_ty) {
-    (TypeKind::Int, TypeKind::Int) => Ok(AstNode::binary(BinaryOp::Add, lhs, rhs)),
-    (TypeKind::Ptr, TypeKind::Int) => {
-      let scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(POINTER_SIZE));
-      Ok(AstNode::binary(BinaryOp::Add, lhs, scaled))
-    }
-    (TypeKind::Int, TypeKind::Ptr) => {
-      let scaled = AstNode::binary(BinaryOp::Mul, lhs, AstNode::number(POINTER_SIZE));
-      Ok(AstNode::binary(BinaryOp::Add, rhs, scaled))
-    }
-    _ => Err(CompileError::at(
+  ctx.annotate_type(&mut lhs);
+  ctx.annotate_type(&mut rhs);
+  let lhs_ty = lhs.ty().clone();
+  let rhs_ty = rhs.ty().clone();
+
+  let mut result = if lhs_ty.is_integer() && rhs_ty.is_integer() {
+    AstNode::binary(BinaryOp::Add, lhs, rhs)
+  } else if lhs_ty.is_pointer() && rhs_ty.is_integer() {
+    let scale = lhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
+    let mut scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(scale));
+    ctx.annotate_type(&mut scaled);
+    AstNode::binary(BinaryOp::Add, lhs, scaled)
+  } else if lhs_ty.is_integer() && rhs_ty.is_pointer() {
+    let scale = rhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
+    let mut scaled = AstNode::binary(BinaryOp::Mul, lhs, AstNode::number(scale));
+    ctx.annotate_type(&mut scaled);
+    AstNode::binary(BinaryOp::Add, rhs, scaled)
+  } else {
+    return Err(CompileError::at(
       source,
       loc,
       "invalid operands to binary '+'",
-    )),
-  }
+    ));
+  };
+
+  ctx.annotate_type(&mut result);
+  Ok(result)
 }
 
 fn build_sub(
   ctx: &ParserContext,
-  lhs: AstNode,
-  rhs: AstNode,
+  mut lhs: AstNode,
+  mut rhs: AstNode,
   source: &str,
   loc: usize,
 ) -> CompileResult<AstNode> {
-  let lhs_ty = ctx.node_type(&lhs);
-  let rhs_ty = ctx.node_type(&rhs);
-  match (lhs_ty, rhs_ty) {
-    (TypeKind::Int, TypeKind::Int) => Ok(AstNode::binary(BinaryOp::Sub, lhs, rhs)),
-    (TypeKind::Ptr, TypeKind::Int) => {
-      let scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(POINTER_SIZE));
-      Ok(AstNode::binary(BinaryOp::Sub, lhs, scaled))
-    }
-    (TypeKind::Ptr, TypeKind::Ptr) => {
-      let diff = AstNode::binary(BinaryOp::Sub, lhs, rhs);
-      Ok(AstNode::binary(
-        BinaryOp::Div,
-        diff,
-        AstNode::number(POINTER_SIZE),
-      ))
-    }
-    _ => Err(CompileError::at(
+  ctx.annotate_type(&mut lhs);
+  ctx.annotate_type(&mut rhs);
+  let lhs_ty = lhs.ty().clone();
+  let rhs_ty = rhs.ty().clone();
+
+  let mut result = if lhs_ty.is_integer() && rhs_ty.is_integer() {
+    AstNode::binary(BinaryOp::Sub, lhs, rhs)
+  } else if lhs_ty.is_pointer() && rhs_ty.is_integer() {
+    let scale = lhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
+    let mut scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(scale));
+    ctx.annotate_type(&mut scaled);
+    AstNode::binary(BinaryOp::Sub, lhs, scaled)
+  } else if lhs_ty.is_pointer() && rhs_ty.is_pointer() {
+    let scale = lhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
+    let mut diff = AstNode::binary(BinaryOp::Sub, lhs, rhs);
+    ctx.annotate_type(&mut diff);
+    AstNode::binary(BinaryOp::Div, diff, AstNode::number(scale))
+  } else {
+    return Err(CompileError::at(
       source,
       loc,
       "invalid operands to binary '-'",
-    )),
-  }
+    ));
+  };
+
+  ctx.annotate_type(&mut result);
+  Ok(result)
 }
 
 fn validate_ident(name: &str, source: &str, loc: usize) -> CompileResult<()> {
