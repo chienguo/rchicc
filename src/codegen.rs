@@ -136,7 +136,7 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       asm.push_str("    push %rax\n");
     }
     AstNode::Assign { lhs, rhs } => {
-      emit_addr(lhs, func, asm);
+      emit_addr(lhs, func, asm, cg);
       emit_expr(rhs, func, asm, cg);
       asm.push_str("    pop %rdi\n");
       asm.push_str("    pop %rax\n");
@@ -145,6 +145,15 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
     }
     AstNode::Block { body } => {
       emit_stmt_list(body.as_deref(), func, asm, true, cg);
+    }
+    AstNode::Addr { operand } => {
+      emit_addr(operand, func, asm, cg);
+    }
+    AstNode::Deref { operand } => {
+      emit_expr(operand, func, asm, cg);
+      asm.push_str("    pop %rax\n");
+      asm.push_str("    mov (%rax), %rax\n");
+      asm.push_str("    push %rax\n");
     }
     AstNode::Return { value } => {
       emit_expr(value, func, asm, cg);
@@ -222,12 +231,15 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
   }
 }
 
-fn emit_addr(node: &AstNode, func: &Function, asm: &mut String) {
+fn emit_addr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen) {
   match node {
     AstNode::Var { obj } => {
       let offset = func.locals[*obj].offset;
       asm.push_str(&format!("    lea -{offset}(%rbp), %rax\n"));
       asm.push_str("    push %rax\n");
+    }
+    AstNode::Deref { operand } => {
+      emit_expr(operand, func, asm, cg);
     }
     _ => panic!("not an lvalue"),
   }

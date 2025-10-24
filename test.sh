@@ -21,6 +21,7 @@ assert() {
     set -e
 
     if [[ "${actual}" -ne "${expected}" ]]; then
+        echo "${input}"
         echo "expected ${expected}, but got ${actual}" >&2
         rm -rf "${tmpdir}"
         exit 1
@@ -102,7 +103,18 @@ assert "{ for (;;) {return 3;} return 5;}" 3
 assert "i=0; while (i<3) i=i+1; return i;" 3
 assert "sum=0; i=0; while (i<=3) { sum=sum+i; i=i+1; } return sum;" 6
 assert "while (0) return 1; return 2;" 2
+assert "{ a=3; p=&a; return *p; }" 3
+assert "{ a=3; p=&a; *p=5; return a; }" 5
+assert "{ a=1; b=2; p=&a; q=&b; *p=*q+5; return a; }" 7
 assert "{ i=0; while(i<10) { i=i+1; } return i; }" 10
+assert "{ x=3; return *&x; }" 3
+assert "{ x=3; y=&x; z=&y; return **z; }" 3
+assert "{ x=3; y=&x; z=&y; return **z; }" 3
+assert "{ x=3; y=5; return *(&x+8); }" 5
+assert "{ x=3; y=5; return *(&y-8); }" 3
+assert "{ x=3; y=&x; *y=5; return x; }" 5
+assert "{ x=3; y=5; *(&x+8)=7; return y; }" 7
+assert "{ x=3; y=5; *(&y-8)=7; return x; }" 7
 
 
 echo "OK"

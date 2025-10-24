@@ -39,6 +39,12 @@ pub enum AstNode {
   Neg {
     operand: Box<AstNode>,
   },
+  Addr {
+    operand: Box<AstNode>,
+  },
+  Deref {
+    operand: Box<AstNode>,
+  },
   Binary {
     op: BinaryOp,
     lhs: Box<AstNode>,
@@ -75,6 +81,18 @@ impl AstNode {
 
   pub fn unary_neg(operand: AstNode) -> Self {
     Self::Neg {
+      operand: Box::new(operand),
+    }
+  }
+
+  pub fn addr(operand: AstNode) -> Self {
+    Self::Addr {
+      operand: Box::new(operand),
+    }
+  }
+
+  pub fn deref(operand: AstNode) -> Self {
+    Self::Deref {
       operand: Box::new(operand),
     }
   }
@@ -249,7 +267,7 @@ impl ParserContext {
 
   fn assign_offsets(&mut self) -> i64 {
     let mut offset: i64 = 0;
-    for obj in &mut self.locals {
+    for obj in self.locals.iter_mut().rev() {
       offset += 8;
       obj.offset = offset;
     }
@@ -452,11 +470,11 @@ fn parse_assign(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRes
     stream.skip("=")?;
     let rhs = parse_assign(stream, ctx)?;
     return match node {
-      AstNode::Var { .. } => Ok(AstNode::assign(node, rhs)),
+      AstNode::Var { .. } | AstNode::Deref { .. } => Ok(AstNode::assign(node, rhs)),
       _ => Err(CompileError::at(
         stream.source,
         assign_loc,
-        "left-hand side of assignment is not a variable",
+        "left-hand side of assignment is not assignable",
       )),
     };
   }
@@ -589,6 +607,16 @@ fn parse_unary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResu
   if stream.equal("-") {
     let operand = parse_unary(stream, ctx)?;
     return Ok(AstNode::unary_neg(operand));
+  }
+
+  if stream.equal("&") {
+    let operand = parse_unary(stream, ctx)?;
+    return Ok(AstNode::addr(operand));
+  }
+
+  if stream.equal("*") {
+    let operand = parse_unary(stream, ctx)?;
+    return Ok(AstNode::deref(operand));
   }
 
   parse_primary(stream, ctx)
