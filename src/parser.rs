@@ -7,6 +7,7 @@
 
 use crate::error::{CompileError, CompileResult};
 use crate::tokenizer::{Token, TokenKind, describe_token, token_text};
+use crate::ty::TypeKind;
 use std::collections::HashMap;
 
 /// Binary operators recognised by the language.
@@ -161,6 +162,7 @@ pub struct Stmt {
 pub struct Obj {
   pub name: String,
   pub offset: i64,
+  pub ty: TypeKind,
 }
 
 impl Obj {
@@ -168,6 +170,7 @@ impl Obj {
     Self {
       name: name.into(),
       offset: 0,
+      ty: TypeKind::Int,
     }
   }
 }
@@ -273,6 +276,53 @@ impl ParserContext {
     }
     align_to(offset, 16)
   }
+
+  fn node_type(&self, node: &AstNode) -> TypeKind {
+    match node {
+      AstNode::Num { .. } => TypeKind::Int,
+      AstNode::Var { obj } => self.locals.get(*obj).map(|o| o.ty).unwrap_or(TypeKind::Int),
+      AstNode::Neg { operand } => {
+        let _ = self.node_type(operand);
+        TypeKind::Int
+      }
+      AstNode::Addr { .. } => TypeKind::Ptr,
+      AstNode::Deref { operand } => {
+        let _ = self.node_type(operand);
+        TypeKind::Int
+      }
+      AstNode::Binary { op, lhs, rhs } => {
+        let lhs_ty = self.node_type(lhs);
+        let rhs_ty = self.node_type(rhs);
+        match op {
+          BinaryOp::Add | BinaryOp::Sub => {
+            if (lhs_ty == TypeKind::Ptr && rhs_ty == TypeKind::Int)
+              || (lhs_ty == TypeKind::Int && rhs_ty == TypeKind::Ptr)
+            {
+              TypeKind::Ptr
+            } else {
+              TypeKind::Int
+            }
+          }
+          BinaryOp::Mul | BinaryOp::Div => TypeKind::Int,
+          _ => TypeKind::Int,
+        }
+      }
+      AstNode::Assign { rhs, .. } => self.node_type(rhs),
+      AstNode::Block { body } => self.stmt_list_type(body.as_deref()),
+      AstNode::Return { value } => self.node_type(value),
+      AstNode::If { .. } => TypeKind::Int,
+      AstNode::For { .. } => TypeKind::Int,
+    }
+  }
+
+  fn stmt_list_type(&self, mut stmt: Option<&Stmt>) -> TypeKind {
+    let mut ty = TypeKind::Int;
+    while let Some(s) = stmt {
+      ty = self.node_type(&s.expr);
+      stmt = s.next.as_deref();
+    }
+    ty
+  }
 }
 
 fn align_to(n: i64, align: i64) -> i64 {
@@ -281,6 +331,8 @@ fn align_to(n: i64, align: i64) -> i64 {
   }
   ((n + align - 1) / align) * align
 }
+
+const POINTER_SIZE: i64 = 8;
 
 fn parse_stmt(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult<Box<Stmt>> {
   match stream.peek_keyword() {
@@ -470,7 +522,14 @@ fn parse_assign(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRes
     stream.skip("=")?;
     let rhs = parse_assign(stream, ctx)?;
     return match node {
-      AstNode::Var { .. } | AstNode::Deref { .. } => Ok(AstNode::assign(node, rhs)),
+      AstNode::Var { obj } => {
+        let ty = ctx.node_type(&rhs);
+        if let Some(local) = ctx.locals.get_mut(obj) {
+          local.ty = ty;
+        }
+        Ok(AstNode::assign(node, rhs))
+      }
+      AstNode::Deref { .. } => Ok(AstNode::assign(node, rhs)),
       _ => Err(CompileError::at(
         stream.source,
         assign_loc,
@@ -556,15 +615,14 @@ fn parse_add(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileResult
       _ => break,
     };
 
-    let op = match op_str {
-      "+" => BinaryOp::Add,
-      "-" => BinaryOp::Sub,
-      _ => unreachable!(),
-    };
-
+    let op_loc = stream.current_loc();
     stream.skip(op_str)?;
     let rhs = parse_mul(stream, ctx)?;
-    node = AstNode::binary(op, node, rhs);
+    node = match op_str {
+      "+" => build_add(ctx, node, rhs, stream.source, op_loc)?,
+      "-" => build_sub(ctx, node, rhs, stream.source, op_loc)?,
+      _ => unreachable!(),
+    };
   }
 
   Ok(node)
@@ -641,6 +699,64 @@ fn parse_primary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRe
   } else {
     let (value, _) = stream.get_number()?;
     Ok(AstNode::number(value))
+  }
+}
+
+fn build_add(
+  ctx: &ParserContext,
+  lhs: AstNode,
+  rhs: AstNode,
+  source: &str,
+  loc: usize,
+) -> CompileResult<AstNode> {
+  let lhs_ty = ctx.node_type(&lhs);
+  let rhs_ty = ctx.node_type(&rhs);
+  match (lhs_ty, rhs_ty) {
+    (TypeKind::Int, TypeKind::Int) => Ok(AstNode::binary(BinaryOp::Add, lhs, rhs)),
+    (TypeKind::Ptr, TypeKind::Int) => {
+      let scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(POINTER_SIZE));
+      Ok(AstNode::binary(BinaryOp::Add, lhs, scaled))
+    }
+    (TypeKind::Int, TypeKind::Ptr) => {
+      let scaled = AstNode::binary(BinaryOp::Mul, lhs, AstNode::number(POINTER_SIZE));
+      Ok(AstNode::binary(BinaryOp::Add, rhs, scaled))
+    }
+    _ => Err(CompileError::at(
+      source,
+      loc,
+      "invalid operands to binary '+'",
+    )),
+  }
+}
+
+fn build_sub(
+  ctx: &ParserContext,
+  lhs: AstNode,
+  rhs: AstNode,
+  source: &str,
+  loc: usize,
+) -> CompileResult<AstNode> {
+  let lhs_ty = ctx.node_type(&lhs);
+  let rhs_ty = ctx.node_type(&rhs);
+  match (lhs_ty, rhs_ty) {
+    (TypeKind::Int, TypeKind::Int) => Ok(AstNode::binary(BinaryOp::Sub, lhs, rhs)),
+    (TypeKind::Ptr, TypeKind::Int) => {
+      let scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(POINTER_SIZE));
+      Ok(AstNode::binary(BinaryOp::Sub, lhs, scaled))
+    }
+    (TypeKind::Ptr, TypeKind::Ptr) => {
+      let diff = AstNode::binary(BinaryOp::Sub, lhs, rhs);
+      Ok(AstNode::binary(
+        BinaryOp::Div,
+        diff,
+        AstNode::number(POINTER_SIZE),
+      ))
+    }
+    _ => Err(CompileError::at(
+      source,
+      loc,
+      "invalid operands to binary '-'",
+    )),
   }
 }
 

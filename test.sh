@@ -110,11 +110,15 @@ assert "{ i=0; while(i<10) { i=i+1; } return i; }" 10
 assert "{ x=3; return *&x; }" 3
 assert "{ x=3; y=&x; z=&y; return **z; }" 3
 assert "{ x=3; y=&x; z=&y; return **z; }" 3
-assert "{ x=3; y=5; return *(&x+8); }" 5
-assert "{ x=3; y=5; return *(&y-8); }" 3
+assert "{ x=3; y=5; return *(&x+1); }" 5
+assert "{ x=3; y=5; return *(&y-1); }" 3
+assert "{ x=3; y=5; return *(&x-(-1)); }" 5
 assert "{ x=3; y=&x; *y=5; return x; }" 5
-assert "{ x=3; y=5; *(&x+8)=7; return y; }" 7
-assert "{ x=3; y=5; *(&y-8)=7; return x; }" 7
+assert "{ x=3; y=5; *(&x+1)=7; return y; }" 7
+assert "{ x=3; y=5; *(&y-1)=7; return x; }" 7
+assert "{ x=3; return (&x+4)-(&x); }" 4
+assert "{ x=3; y=5; return (&y)-(&x); }" 1
+assert "{ x=3; y=5; return (&x+2)-&x+3; }" 5
 
 
 echo "OK"
