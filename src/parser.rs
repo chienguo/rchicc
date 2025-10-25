@@ -10,6 +10,8 @@ use crate::tokenizer::{Token, TokenKind, describe_token, token_text};
 use crate::ty::Type;
 use std::collections::HashMap;
 
+const MAX_CALL_ARGS: usize = 6;
+
 /// Binary operators recognised by the language.
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
@@ -65,6 +67,7 @@ pub enum AstNode {
   },
   Call {
     name: String,
+    args: Vec<AstNode>,
     ty: Type,
   },
   Block {
@@ -139,9 +142,10 @@ impl AstNode {
     }
   }
 
-  pub fn call(name: impl Into<String>) -> Self {
+  pub fn call(name: impl Into<String>, args: Vec<AstNode>) -> Self {
     Self::Call {
       name: name.into(),
+      args,
       ty: Type::int(),
     }
   }
@@ -481,7 +485,10 @@ impl ParserContext {
           rhs.ty().clone()
         };
       }
-      AstNode::Call { ty, .. } => {
+      AstNode::Call { args, ty, .. } => {
+        for arg in args.iter_mut() {
+          self.annotate_type(arg);
+        }
         *ty = Type::int();
       }
       AstNode::Block { body, ty } => {
@@ -919,8 +926,28 @@ fn parse_primary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRe
     validate_ident(&name, stream.source, loc)?;
     if stream.peek_is("(") {
       stream.skip("(")?;
+      let mut args = Vec::new();
+      if !stream.peek_is(")") {
+        loop {
+          let arg = parse_assign(stream, ctx)?;
+          args.push(arg);
+          if stream.equal(",") {
+            continue;
+          }
+          break;
+        }
+      }
       stream.skip(")")?;
-      return Ok(AstNode::call(name));
+      if args.len() > MAX_CALL_ARGS {
+        return Err(CompileError::at(
+          stream.source,
+          loc,
+          format!("function calls support at most {MAX_CALL_ARGS} arguments"),
+        ));
+      }
+      let mut call = AstNode::call(name, args);
+      ctx.annotate_type(&mut call);
+      return Ok(call);
     }
     let index = ctx.lookup_local(&name).ok_or_else(|| {
       CompileError::at(

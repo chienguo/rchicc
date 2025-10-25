@@ -25,6 +25,14 @@ assert() {
             printf 'int ret%d(void) { return %d; }\n' "${value}" "${value}"
         done
     } >"${tmpdir}/tmp2.c"
+    cat <<'EOF' >>"${tmpdir}/tmp2.c"
+int add2(int a, int b) { return a + b; }
+int add3(int a, int b, int c) { return a + b + c; }
+int add4(int a, int b, int c, int d) { return a + b + c + d; }
+int add5(int a, int b, int c, int d, int e) { return a + b + c + d + e; }
+int add6(int a, int b, int c, int d, int e, int f) { return a + b + c + d + e + f; }
+int mix6(int a, int b, int c, int d, int e, int f) { return (a - b) + (c - d) + (e - f); }
+EOF
     gcc -static -o "${tmpdir}/tmp" "${tmpdir}/tmp.s" "${tmpdir}/tmp2.c"
 
     set +e
@@ -135,6 +143,12 @@ assert "return ret3();" 3
 assert "int x=ret5(); return x;" 5
 assert "{ int a=ret3(); int b=ret5(); return ret8()-a-b; }" 0
 assert "{ int x=ret10(); x=ret42(); return x; }" 42
+assert "return add2(3, 4);" 7
+assert "return add3(ret1(), 2, 3);" 6
+assert "{ int x=add5(1, 2, 3, 4, 5); return x; }" 15
+assert "return add6(1, 2, 3, 4, 5, 6);" 21
+assert "return add2(add2(1, 2), add2(3, 4));" 10
+assert "{ return mix6(ret5(), ret3(), ret4(), ret2(), ret1(), ret0()); }" 5
 
 
 echo "OK"

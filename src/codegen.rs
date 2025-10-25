@@ -6,6 +6,8 @@
 
 use crate::parser::{AstNode, BinaryOp, Function, Stmt};
 
+const ARG_REGISTERS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
 struct Codegen {
   next_label: usize,
 }
@@ -155,7 +157,17 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       asm.push_str("    mov (%rax), %rax\n");
       asm.push_str("    push %rax\n");
     }
-    AstNode::Call { name, .. } => {
+    AstNode::Call { name, args, .. } => {
+      debug_assert!(
+        args.len() <= ARG_REGISTERS.len(),
+        "codegen received call with too many arguments"
+      );
+      for arg in args.iter() {
+        emit_expr(arg, func, asm, cg);
+      }
+      for reg in ARG_REGISTERS.iter().take(args.len()).rev() {
+        asm.push_str(&format!("    pop {}\n", reg));
+      }
       asm.push_str("    mov $0, %rax\n");
       asm.push_str(&format!("    call {name}\n"));
       asm.push_str("    push %rax\n");
