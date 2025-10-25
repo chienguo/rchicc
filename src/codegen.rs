@@ -5,6 +5,7 @@
 //! expressions). Locals are addressed relative to `%rbp`.
 
 use crate::parser::{AstNode, BinaryOp, Function, Program, Stmt};
+use crate::ty::Type;
 
 const ARG_REGISTERS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
@@ -109,7 +110,11 @@ fn emit_expr(
     }
     AstNode::Var { obj, .. } => {
       let offset = func.locals[*obj].offset;
-      asm.push_str(&format!("    mov -{offset}(%rbp), %rax\n"));
+      if func.locals[*obj].ty.is_array() {
+        asm.push_str(&format!("    lea -{offset}(%rbp), %rax\n"));
+      } else {
+        asm.push_str(&format!("    mov -{offset}(%rbp), %rax\n"));
+      }
       asm.push_str("    push %rax\n");
     }
     AstNode::Binary { op, lhs, rhs, .. } => {
@@ -161,10 +166,9 @@ fn emit_expr(
     AstNode::Assign { lhs, rhs, .. } => {
       emit_addr(lhs, func, asm, return_label, cg);
       emit_expr(rhs, func, asm, return_label, cg);
-      asm.push_str("    pop %rdi\n");
       asm.push_str("    pop %rax\n");
-      asm.push_str("    mov %rdi, (%rax)\n");
-      asm.push_str("    push %rdi\n");
+      store(asm);
+      asm.push_str("    push %rax\n");
     }
     AstNode::Block { body, .. } => {
       emit_stmt_list(body.as_deref(), func, asm, true, return_label, cg);
@@ -175,7 +179,7 @@ fn emit_expr(
     AstNode::Deref { operand, .. } => {
       emit_expr(operand, func, asm, return_label, cg);
       asm.push_str("    pop %rax\n");
-      asm.push_str("    mov (%rax), %rax\n");
+      load(asm, node.ty());
       asm.push_str("    push %rax\n");
     }
     AstNode::Call { name, args, .. } => {
@@ -296,4 +300,16 @@ fn emit_addr(
     }
     _ => panic!("not an lvalue"),
   }
+}
+
+fn load(asm: &mut String, ty: &Type) {
+  if ty.is_array() {
+    return;
+  }
+  asm.push_str("    mov (%rax), %rax\n");
+}
+
+fn store(asm: &mut String) {
+  asm.push_str("    pop %rdi\n");
+  asm.push_str("    mov %rax, (%rdi)\n");
 }

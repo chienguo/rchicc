@@ -104,6 +104,8 @@ pub fn tokenize(input: &str) -> CompileResult<Vec<Token>> {
         | b','
         | b'{'
         | b'}'
+        | b'['
+        | b']'
         | b'&'
     ) {
       tokens.push(Token::new(TokenKind::Punctuator, i, 1, None));

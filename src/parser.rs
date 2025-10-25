@@ -323,6 +323,7 @@ fn parse_function(stream: &mut TokenStream) -> CompileResult<Function> {
     loop {
       let param_base = parse_declspec(stream)?;
       let param_index = parse_declarator(stream, &mut ctx, &param_base)?;
+      ctx.promote_array_param(param_index);
       params.push(param_index);
       if params.len() > MAX_CALL_ARGS {
         return Err(CompileError::at(
@@ -443,6 +444,20 @@ impl ParserContext {
     Ok(index)
   }
 
+  fn promote_array_param(&mut self, index: usize) {
+    if let Some(obj) = self.locals.get_mut(index)
+      && obj.ty.is_array()
+    {
+      let decl = obj.ty.decl_token;
+      let elem = obj.ty.base().cloned().unwrap_or_else(Type::int);
+      let mut ptr = Type::pointer_to(elem);
+      if let Some(token) = decl {
+        ptr = ptr.with_decl_token(token);
+      }
+      obj.ty = ptr;
+    }
+  }
+
   fn lookup_local(&self, name: &str) -> Option<usize> {
     self.map.get(name).copied()
   }
@@ -467,7 +482,7 @@ impl ParserContext {
           .get(*obj)
           .map(|o| o.ty.clone())
           .unwrap_or_else(Type::int);
-        *ty = t;
+        *ty = t.decay();
       }
       AstNode::Neg { operand, ty } => {
         self.annotate_type(operand);
@@ -475,7 +490,15 @@ impl ParserContext {
       }
       AstNode::Addr { operand, ty } => {
         self.annotate_type(operand);
-        *ty = Type::pointer_to(operand.ty().clone());
+        let result_ty = match operand.as_ref() {
+          AstNode::Var { obj, .. } => self
+            .locals
+            .get(*obj)
+            .map(|o| Type::pointer_to(o.ty.clone()))
+            .unwrap_or_else(|| Type::pointer_to(Type::int())),
+          _ => Type::pointer_to(operand.ty().clone()),
+        };
+        *ty = result_ty;
       }
       AstNode::Deref { operand, ty } => {
         self.annotate_type(operand);
@@ -486,17 +509,17 @@ impl ParserContext {
         self.annotate_type(rhs);
         *ty = match op {
           BinaryOp::Add => {
-            if lhs.ty().is_pointer() && rhs.ty().is_integer() {
-              lhs.ty().clone()
-            } else if lhs.ty().is_integer() && rhs.ty().is_pointer() {
-              rhs.ty().clone()
+            if lhs.ty().is_pointer_like() && rhs.ty().is_integer() {
+              lhs.ty().decay()
+            } else if lhs.ty().is_integer() && rhs.ty().is_pointer_like() {
+              rhs.ty().decay()
             } else {
               Type::int()
             }
           }
           BinaryOp::Sub => {
-            if lhs.ty().is_pointer() && rhs.ty().is_integer() {
-              lhs.ty().clone()
+            if lhs.ty().is_pointer_like() && rhs.ty().is_integer() {
+              lhs.ty().decay()
             } else {
               Type::int()
             }
@@ -508,8 +531,8 @@ impl ParserContext {
       AstNode::Assign { lhs, rhs, ty } => {
         self.annotate_type(lhs);
         self.annotate_type(rhs);
-        *ty = if lhs.ty().is_pointer() {
-          lhs.ty().clone()
+        *ty = if lhs.ty().is_pointer_like() {
+          lhs.ty().decay()
         } else {
           rhs.ty().clone()
         };
@@ -736,6 +759,18 @@ fn parse_declarator(
   }
   let (name, loc) = stream.get_ident()?;
   validate_ident(&name, stream.source, loc)?;
+  while stream.equal("[") {
+    let (len, len_loc) = stream.get_number()?;
+    if len <= 0 {
+      return Err(CompileError::at(
+        stream.source,
+        len_loc,
+        "array length must be positive",
+      ));
+    }
+    stream.skip("]")?;
+    ty = Type::array_of(ty, len as usize);
+  }
   ctx.declare_local(&name, ty, stream.source, loc)
 }
 
@@ -748,7 +783,16 @@ fn parse_declaration_into<'a>(
 
   loop {
     let index = parse_declarator(stream, ctx, &base_ty)?;
-    if stream.equal("=") {
+    if stream.peek_is("=") {
+      if ctx.locals[index].ty.is_array() {
+        let loc = stream.current_loc();
+        return Err(CompileError::at(
+          stream.source,
+          loc,
+          "array initialisers are not supported",
+        ));
+      }
+      stream.skip("=")?;
       let init = parse_expr(stream, ctx)?;
       let mut assign = AstNode::assign(AstNode::var(index), init);
       ctx.annotate_type(&mut assign);
@@ -1010,12 +1054,12 @@ fn build_add(
 
   let mut result = if lhs_ty.is_integer() && rhs_ty.is_integer() {
     AstNode::binary(BinaryOp::Add, lhs, rhs)
-  } else if lhs_ty.is_pointer() && rhs_ty.is_integer() {
+  } else if lhs_ty.is_pointer_like() && rhs_ty.is_integer() {
     let scale = lhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
     let mut scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(scale));
     ctx.annotate_type(&mut scaled);
     AstNode::binary(BinaryOp::Add, lhs, scaled)
-  } else if lhs_ty.is_integer() && rhs_ty.is_pointer() {
+  } else if lhs_ty.is_integer() && rhs_ty.is_pointer_like() {
     let scale = rhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
     let mut scaled = AstNode::binary(BinaryOp::Mul, lhs, AstNode::number(scale));
     ctx.annotate_type(&mut scaled);
@@ -1046,12 +1090,12 @@ fn build_sub(
 
   let mut result = if lhs_ty.is_integer() && rhs_ty.is_integer() {
     AstNode::binary(BinaryOp::Sub, lhs, rhs)
-  } else if lhs_ty.is_pointer() && rhs_ty.is_integer() {
+  } else if lhs_ty.is_pointer_like() && rhs_ty.is_integer() {
     let scale = lhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
     let mut scaled = AstNode::binary(BinaryOp::Mul, rhs, AstNode::number(scale));
     ctx.annotate_type(&mut scaled);
     AstNode::binary(BinaryOp::Sub, lhs, scaled)
-  } else if lhs_ty.is_pointer() && rhs_ty.is_pointer() {
+  } else if lhs_ty.is_pointer_like() && rhs_ty.is_pointer_like() {
     let scale = lhs_ty.base().map(|t| t.size()).unwrap_or(POINTER_SIZE);
     let mut diff = AstNode::binary(BinaryOp::Sub, lhs, rhs);
     ctx.annotate_type(&mut diff);

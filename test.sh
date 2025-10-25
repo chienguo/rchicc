@@ -516,6 +516,30 @@ int main() {
   int y = set(&x);
   return x + y;
 }' 14
+assert $'int main() {
+  int arr[3];
+  *arr = 1;
+  *(arr + 1) = 2;
+  *(arr + 2) = *arr + *(arr + 1);
+  return *(arr + 2);
+}' 3
+assert $'int sum(int xs[3]) {
+  return *xs + *(xs + 1) + *(xs + 2);
+}
+
+int main() {
+  int arr[3];
+  *arr = 1;
+  *(arr + 1) = 4;
+  *(arr + 2) = 7;
+  return sum(arr);
+}' 12
+assert $'int main() {
+  int arr[4];
+  *(arr + 3) = 7;
+  int *p = arr;
+  return *(p + 3);
+}' 7
 
 
 echo "OK"

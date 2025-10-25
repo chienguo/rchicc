@@ -2,6 +2,7 @@
 pub enum TypeKind {
   Int,
   Ptr,
+  Array,
   Func,
 }
 
@@ -10,6 +11,8 @@ pub struct Type {
   pub kind: TypeKind,
   pub base: Option<Box<Type>>,
   pub ret: Option<Box<Type>>,
+  pub array_len: Option<usize>,
+  pub size: i64,
   pub decl_token: Option<usize>,
 }
 
@@ -19,6 +22,8 @@ impl Type {
       kind: TypeKind::Int,
       base: None,
       ret: None,
+      array_len: None,
+      size: 8,
       decl_token: None,
     }
   }
@@ -28,6 +33,20 @@ impl Type {
       kind: TypeKind::Ptr,
       base: Some(Box::new(base)),
       ret: None,
+      array_len: None,
+      size: 8,
+      decl_token: None,
+    }
+  }
+
+  pub fn array_of(base: Type, len: usize) -> Self {
+    let size = base.size() * len as i64;
+    Self {
+      kind: TypeKind::Array,
+      base: Some(Box::new(base)),
+      ret: None,
+      array_len: Some(len),
+      size,
       decl_token: None,
     }
   }
@@ -37,6 +56,8 @@ impl Type {
       kind: TypeKind::Func,
       base: None,
       ret: Some(Box::new(ret)),
+      array_len: None,
+      size: 8,
       decl_token: None,
     }
   }
@@ -54,6 +75,14 @@ impl Type {
     matches!(self.kind, TypeKind::Ptr)
   }
 
+  pub fn is_array(&self) -> bool {
+    matches!(self.kind, TypeKind::Array)
+  }
+
+  pub fn is_pointer_like(&self) -> bool {
+    self.is_pointer() || self.is_array()
+  }
+
   pub fn is_function(&self) -> bool {
     matches!(self.kind, TypeKind::Func)
   }
@@ -67,10 +96,21 @@ impl Type {
   }
 
   pub fn size(&self) -> i64 {
-    match self.kind {
-      TypeKind::Int => 8,
-      TypeKind::Ptr => 8,
-      TypeKind::Func => 8,
+    self.size
+  }
+
+  pub fn array_len(&self) -> Option<usize> {
+    self.array_len
+  }
+
+  pub fn decay(&self) -> Type {
+    if self.is_array() {
+      self
+        .base()
+        .map(|t| Type::pointer_to(t.clone()))
+        .unwrap_or_else(Type::int)
+    } else {
+      self.clone()
     }
   }
 }
@@ -81,4 +121,8 @@ pub fn pointer_to(base: Type) -> Type {
 
 pub fn func(ret: Type) -> Type {
   Type::func(ret)
+}
+
+pub fn array_of(base: Type, len: usize) -> Type {
+  Type::array_of(base, len)
 }
