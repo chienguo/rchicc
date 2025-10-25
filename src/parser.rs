@@ -254,9 +254,17 @@ impl Obj {
 
 #[derive(Debug, Clone)]
 pub struct Function {
+  pub name: String,
+  pub return_ty: Type,
+  pub ty: Type,
   pub body: Option<Box<Stmt>>,
   pub locals: Vec<Obj>,
   pub stack_size: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Program {
+  pub functions: Vec<Function>,
 }
 
 impl Stmt {
@@ -284,48 +292,57 @@ impl<'a> Iterator for StmtIter<'a> {
 
 /// Parse a sequence of statements from the token stream.
 // Parse procedure overview:
-// - `parse` initialises the token stream/context and hands off to `parse_stmt_sequence`.
-// - `parse_stmt_sequence` consumes zero or more declarations/statements until the terminator.
-// - Expressions descend via `parse_assign` -> ... -> `parse_primary`, mirroring C precedence.
-pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Function> {
+// - `parse` initialises the token stream/context and hands off to `parse_function`.
+// - `parse_function` consumes a function definition (`int` return type only for now).
+// - Function bodies reuse `parse_stmt_sequence`, expressions still descend via the usual precedence ladder.
+pub fn parse(tokens: Vec<Token>, source: &str) -> CompileResult<Program> {
   let mut stream = TokenStream::new(tokens, source);
 
   if stream.is_eof() {
     return Err(CompileError::at(source, 0, "program is empty"));
   }
 
-  let mut ctx = ParserContext::new();
-  let mut body = if stream.peek_is("{") {
-    parse_block_body(&mut stream, &mut ctx)?
-  } else {
-    parse_stmt_sequence(&mut stream, &mut ctx, None)?
-  };
+  let mut functions = Vec::new();
+  while !stream.is_eof() {
+    functions.push(parse_function(&mut stream)?);
+  }
 
-  if !stream.is_eof() {
-    let token = stream.current().ok_or_else(|| {
-      CompileError::at(
-        source,
-        source.len(),
-        "unexpected end of input after statement",
-      )
-    })?;
-    let got = describe_token(Some(token), source);
+  Ok(Program { functions })
+}
+
+fn parse_function(stream: &mut TokenStream) -> CompileResult<Function> {
+  let return_ty = parse_declspec(stream)?;
+  let (name, name_loc) = stream.get_ident()?;
+  validate_ident(&name, stream.source, name_loc)?;
+
+  stream.skip("(")?;
+  if !stream.peek_is(")") {
+    let loc = stream.current_loc();
     return Err(CompileError::at(
-      source,
-      token.loc,
-      format!("unexpected token \"{got}\""),
+      stream.source,
+      loc,
+      "functions with parameters are not supported yet",
     ));
   }
+  stream.skip(")")?;
+
+  let mut ctx = ParserContext::new();
+  let mut body = parse_block_body(stream, &mut ctx)?;
 
   if let Some(stmt) = body.as_deref_mut() {
     ctx.annotate_stmt_list(Some(stmt));
   }
 
   let stack_size = ctx.assign_offsets();
+  let locals = ctx.into_locals();
+  let fn_ty = Type::func(return_ty.clone());
 
   Ok(Function {
+    name,
+    return_ty,
+    ty: fn_ty,
     body,
-    locals: ctx.locals,
+    locals,
     stack_size,
   })
 }
@@ -541,6 +558,10 @@ impl ParserContext {
       stmt = s.next.as_deref_mut();
     }
     ty
+  }
+
+  fn into_locals(self) -> Vec<Obj> {
+    self.locals
   }
 }
 
@@ -1082,10 +1103,6 @@ impl<'a> TokenStream<'a> {
 
   fn peek(&self) -> Option<&Token> {
     self.tokens.get(self.pos)
-  }
-
-  fn current(&self) -> Option<&Token> {
-    self.peek()
   }
 
   fn current_loc(&self) -> usize {
