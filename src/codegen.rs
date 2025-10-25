@@ -46,6 +46,12 @@ fn emit_function(func: &Function, asm: &mut String, cg: &mut Codegen) {
     asm.push_str(&format!("    sub ${}, %rsp\n", func.stack_size));
   }
 
+  for (i, &local_index) in func.params.iter().enumerate() {
+    let offset = func.locals[local_index].offset;
+    let reg = ARG_REGISTERS[i];
+    asm.push_str(&format!("    mov {reg}, -{offset}(%rbp)\n"));
+  }
+
   emit_stmt_list(func.body.as_deref(), func, asm, true, &return_label, cg);
 
   asm.push_str("    pop %rax\n");

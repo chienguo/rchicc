@@ -484,6 +484,38 @@ assert $'int main() {
 assert $'int main() {
   return mix6(ret5(), ret3(), ret4(), ret2(), ret1(), ret0());
 }' 5
+assert $'int add_local(int a, int b) {
+  return a + b;
+}
+
+int main() {
+  return add_local(7, 3);
+}' 10
+assert $'int sum6_local(int a, int b, int c, int d, int e, int f) {
+  return a + b + c + d + e + f;
+}
+
+int main() {
+  return sum6_local(1, 2, 3, 4, 5, 6);
+}' 21
+assert $'int load(int *p) {
+  return *p;
+}
+
+int main() {
+  int x = 9;
+  return load(&x);
+}' 9
+assert $'int set(int *p) {
+  *p = 7;
+  return *p;
+}
+
+int main() {
+  int x = 4;
+  int y = set(&x);
+  return x + y;
+}' 14
 
 
 echo "OK"

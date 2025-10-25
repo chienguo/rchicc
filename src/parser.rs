@@ -258,6 +258,7 @@ pub struct Function {
   pub return_ty: Type,
   pub ty: Type,
   pub body: Option<Box<Stmt>>,
+  pub params: Vec<usize>,
   pub locals: Vec<Obj>,
   pub stack_size: i64,
 }
@@ -315,18 +316,27 @@ fn parse_function(stream: &mut TokenStream) -> CompileResult<Function> {
   let (name, name_loc) = stream.get_ident()?;
   validate_ident(&name, stream.source, name_loc)?;
 
+  let mut ctx = ParserContext::new();
   stream.skip("(")?;
+  let mut params = Vec::new();
   if !stream.peek_is(")") {
-    let loc = stream.current_loc();
-    return Err(CompileError::at(
-      stream.source,
-      loc,
-      "functions with parameters are not supported yet",
-    ));
+    loop {
+      let param_base = parse_declspec(stream)?;
+      let param_index = parse_declarator(stream, &mut ctx, &param_base)?;
+      params.push(param_index);
+      if params.len() > MAX_CALL_ARGS {
+        return Err(CompileError::at(
+          stream.source,
+          stream.current_loc(),
+          format!("functions support at most {MAX_CALL_ARGS} parameters"),
+        ));
+      }
+      if !stream.equal(",") {
+        break;
+      }
+    }
   }
   stream.skip(")")?;
-
-  let mut ctx = ParserContext::new();
   let mut body = parse_block_body(stream, &mut ctx)?;
 
   if let Some(stmt) = body.as_deref_mut() {
@@ -334,6 +344,7 @@ fn parse_function(stream: &mut TokenStream) -> CompileResult<Function> {
   }
 
   let stack_size = ctx.assign_offsets();
+  let param_indices = params;
   let locals = ctx.into_locals();
   let fn_ty = Type::func(return_ty.clone());
 
@@ -342,6 +353,7 @@ fn parse_function(stream: &mut TokenStream) -> CompileResult<Function> {
     return_ty,
     ty: fn_ty,
     body,
+    params: param_indices,
     locals,
     stack_size,
   })
