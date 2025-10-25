@@ -5,15 +5,27 @@ BIN="${BIN:-./target/debug/rchicc}"
 
 cargo build --quiet --bin rchicc
 
+COLOR_INPUT=$'\033[1;36m'
+COLOR_EXPECTED=$'\033[1;32m'
+COLOR_RESET=$'\033[0m'
+
 assert() {
     local input="$1"
     local expected="$2"
+    printf 'testing on "%b%s%b", expect %b%s%b\n' \
+        "${COLOR_INPUT}" "${input}" "${COLOR_RESET}" \
+        "${COLOR_EXPECTED}" "${expected}" "${COLOR_RESET}"
     local tmpdir
 
     tmpdir="$(mktemp -d)"
 
     "$BIN" "$input" >"${tmpdir}/tmp.s"
-    gcc -o "${tmpdir}/tmp" "${tmpdir}/tmp.s"
+    {
+        for value in $(seq 0 50); do
+            printf 'int ret%d(void) { return %d; }\n' "${value}" "${value}"
+        done
+    } >"${tmpdir}/tmp2.c"
+    gcc -static -o "${tmpdir}/tmp" "${tmpdir}/tmp.s" "${tmpdir}/tmp2.c"
 
     set +e
     "${tmpdir}/tmp"
@@ -119,6 +131,10 @@ assert "{ int x=3; int y=5; *(&y-1)=7; return x; }" 7
 assert "{ int x=3; return (&x+4)-(&x); }" 4
 assert "{ int x=3; int y=5; return (&y)-(&x); }" 1
 assert "{ int x=3; int y=5; return (&x+2)-&x+3; }" 5
+assert "return ret3();" 3
+assert "int x=ret5(); return x;" 5
+assert "{ int a=ret3(); int b=ret5(); return ret8()-a-b; }" 0
+assert "{ int x=ret10(); x=ret42(); return x; }" 42
 
 
 echo "OK"

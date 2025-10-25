@@ -155,6 +155,11 @@ fn emit_expr(node: &AstNode, func: &Function, asm: &mut String, cg: &mut Codegen
       asm.push_str("    mov (%rax), %rax\n");
       asm.push_str("    push %rax\n");
     }
+    AstNode::Call { name, .. } => {
+      asm.push_str("    mov $0, %rax\n");
+      asm.push_str(&format!("    call {name}\n"));
+      asm.push_str("    push %rax\n");
+    }
     AstNode::Return { value, .. } => {
       emit_expr(value, func, asm, cg);
       asm.push_str("    pop %rax\n");

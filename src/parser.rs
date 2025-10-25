@@ -63,6 +63,10 @@ pub enum AstNode {
     rhs: Box<AstNode>,
     ty: Type,
   },
+  Call {
+    name: String,
+    ty: Type,
+  },
   Block {
     body: Option<Box<Stmt>>,
     ty: Type,
@@ -135,6 +139,13 @@ impl AstNode {
     }
   }
 
+  pub fn call(name: impl Into<String>) -> Self {
+    Self::Call {
+      name: name.into(),
+      ty: Type::int(),
+    }
+  }
+
   pub fn ret(value: AstNode) -> Self {
     Self::Return {
       value: Box::new(value),
@@ -187,6 +198,7 @@ impl AstNode {
       | AstNode::Deref { ty, .. }
       | AstNode::Binary { ty, .. }
       | AstNode::Assign { ty, .. }
+      | AstNode::Call { ty, .. }
       | AstNode::Block { ty, .. }
       | AstNode::If { ty, .. }
       | AstNode::For { ty, .. } => ty,
@@ -203,6 +215,7 @@ impl AstNode {
       | AstNode::Deref { ty, .. }
       | AstNode::Binary { ty, .. }
       | AstNode::Assign { ty, .. }
+      | AstNode::Call { ty, .. }
       | AstNode::Block { ty, .. }
       | AstNode::If { ty, .. }
       | AstNode::For { ty, .. } => ty,
@@ -467,6 +480,9 @@ impl ParserContext {
         } else {
           rhs.ty().clone()
         };
+      }
+      AstNode::Call { ty, .. } => {
+        *ty = Type::int();
       }
       AstNode::Block { body, ty } => {
         *ty = self.annotate_stmt_list(body.as_deref_mut());
@@ -901,6 +917,11 @@ fn parse_primary(stream: &mut TokenStream, ctx: &mut ParserContext) -> CompileRe
   ) {
     let (name, loc) = stream.get_ident()?;
     validate_ident(&name, stream.source, loc)?;
+    if stream.peek_is("(") {
+      stream.skip("(")?;
+      stream.skip(")")?;
+      return Ok(AstNode::call(name));
+    }
     let index = ctx.lookup_local(&name).ok_or_else(|| {
       CompileError::at(
         stream.source,
